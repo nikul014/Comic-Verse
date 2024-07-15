@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Lab-Activity
+
+# Predefined parameters
+Parameters:
+  Stage:
+    Type: String
+    Default: term2
+  RoleARN:
+    Type: String
+    Default: "arn:aws:iam::998689998714:role/LabRole"
+  Region:
+    Type: String
+    Default: "us-east-1"
+
+
+Resources:
+  ComicProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "ComicProcessingQueue-${Stage}"
+      VisibilityTimeout: 70  # Set the visibility timeout slightly higher than Lambda function timeout
+
+  ComicS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "comic-bucket-${Stage}"
+      AccessControl: Private
+
+  ComicProcessingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 60
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: "ComicTable-term1"
+          S3_BUCKET_NAME: !Ref ComicS3Bucket
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
+          const PDFDocument = require('pdfkit');
+          const { Readable } = require('stream');
+          const { unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          const s3 = new S3Client({ region: process.env.AWS_REGION });
+          const polly = new PollyClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            for (const record of event.Records) {
+              const { body } = record;
+              const comic = JSON.parse(body);
+              const comicId = comic.id.S;
+              const comicText = comic.comicText.S;
+
+              // Generate PDF from comic text
+              const pdfDoc = new PDFDocument();
+              const pdfStream = new Readable();
+              pdfStream._read = () => {}; // No-op
+              pdfDoc.pipe(pdfStream);
+              pdfDoc.text(comicText);
+              pdfDoc.end();
+
+              const pdfBuffer = await new Promise((resolve, reject) => {
+                const buffers = [];
+                pdfStream.on('data', buffers.push.bind(buffers));
+                pdfStream.on('end', () => resolve(Buffer.concat(buffers)));
+                pdfStream.on('error', reject);
+              });
+
+              const pdfKey = `comics/${comicId}.pdf`;
+              await s3.send(new PutObjectCommand({
+                Bucket: process.env.S3_BUCKET_NAME,
+                Key: pdfKey,
+                Body: pdfBuffer,
+                ContentType: 'application/pdf'
+              }));
+
+              // Generate MP3 from comic text
+              const pollyParams = {
+                OutputFormat: 'mp3',
+                Text: comicText,
+                VoiceId: 'Joanna'
+              };
+              const pollyCommand = new SynthesizeSpeechCommand(pollyParams);
+              const pollyResponse = await polly.send(pollyCommand);
+
+              const mp3Key = `comics/${comicId}.mp3`;
+              await s3.send(new PutObjectCommand({
+                Bucket: process.env.S3_BUCKET_NAME,
+                Key: mp3Key,
+                Body: pollyResponse.AudioStream,
+                ContentType: 'audio/mpeg'
+              }));
+
+              // Update DynamoDB with S3 URLs
+              const updateParams = {
+                TableName: process.env.COMIC_TABLE_NAME,
+                Key: { id: { S: comicId } },
+                UpdateExpression: "SET pdfUrl = :pdfUrl, mp3Url = :mp3Url",
+                ExpressionAttributeValues: {
+                  ":pdfUrl": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${pdfKey}` },
+                  ":mp3Url": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${mp3Key}` }
+                }
+              };
+              await db.send(new UpdateItemCommand(updateParams));
+            }
+          };
+
+
+
+  ComicProcessingFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt ComicProcessingQueue.Arn
+
+  ComicProcessingFunctionSQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      BatchSize: 1  # Adjust batch size as per your requirement

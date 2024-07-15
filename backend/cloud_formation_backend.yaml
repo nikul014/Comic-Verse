@@ -1,0 +1,1114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Lab-Activity
+
+# Predefined parameters
+Parameters:
+  Stage:
+    Type: String
+    Default: term1
+  RoleARN:
+    Type: String
+    Default: "arn:aws:iam::998689998714:role/LabRole"
+  Region:
+    Type: String
+    Default: "us-east-1"
+
+
+Resources:
+  UserTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "UserTable"
+      AttributeDefinitions:
+        - AttributeName: 'email'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'email'
+          KeyType: 'HASH'
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  ComicTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "ComicTable"
+      AttributeDefinitions:
+        - AttributeName: 'id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'id'
+          KeyType: 'HASH'
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  ComicProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "ComicProcessingQueue"
+      VisibilityTimeout: 70  # Set the visibility timeout slightly higher than Lambda function timeout
+
+  ComicS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "comic-bucket-term-project"
+      AccessControl: Private
+
+
+  SuperheroTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Superhero Comics SNS Topic
+
+  FantasyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Fantasy Comics SNS Topic
+
+  SciFiTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Sci-Fi Comics SNS Topic
+
+  MysteryTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Mystery Comics SNS Topic
+
+  # Get login function
+  GetLoginFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, GetItemCommand, ScanCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
+          
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+              const response = {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                }
+              };
+          
+              try {
+                  const eventBody = event.queryStringParameters;
+          
+                  const params = {
+                      TableName: process.env.USERS_TABLE_NAME,
+                      FilterExpression: 'email = :email',
+                      ExpressionAttributeValues: {
+                          ':email': { S: eventBody.email }
+                      }
+                  };
+          
+                  const Item = await db.send(new ScanCommand(params));
+          
+                  console.log({ Item });
+          
+                  if (Item.Items.length === 0) {
+                    return {
+                      statusCode: 404,
+                      headers: {
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Headers": "Content-Type",
+                        "Access-Control-Allow-Methods": "*"
+                      },
+                      body: JSON.stringify({ message: 'User not found' }),
+                    };
+                  }
+                  const user = unmarshall(Item.Items[0]);
+          
+                  if (user.password !== eventBody.password) {
+                    return {
+                      statusCode: 401,
+                      headers: {
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Headers": "Content-Type",
+                        "Access-Control-Allow-Methods": "*"
+                      },
+                      body: JSON.stringify({ message: 'Invalid password' })
+                    };
+                  }
+          
+                  response.body = JSON.stringify({
+                      message: "Successfully retrieved user.",
+                      data: user,
+                  });
+              } catch (e) {
+                  console.error(e);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({
+                      message: "Failed to get user.",
+                      errorMsg: e.message,
+                      errorStack: e.stack,
+                  });
+              }
+              return response;
+          };
+  
+  
+
+  # Get login gateway resource
+  ApiGatewayResourceLogin:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: login-user
+
+  # Get login Method
+  ApiGatewayMethodLogin:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceLogin
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceLogin
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetLoginFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Get login Lambda Permission
+  GetLoginFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GetLoginFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  # Signup Lambda function
+  SignupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall } = require('@aws-sdk/util-dynamodb');
+          
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+              const response = {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                }
+              };
+          
+              try {
+                  const eventBody = JSON.parse(event.body);
+          
+                  const existingUserParams = {
+                      TableName: process.env.USERS_TABLE_NAME,
+                      Key: {
+                          'email': { S: eventBody.email }
+                      }
+                  };
+          
+                  const existingUser = await db.send(new GetItemCommand(existingUserParams));
+          
+                  if (existingUser.Item) {
+                      return {
+                          statusCode: 400,
+                          headers: {
+                              "Access-Control-Allow-Origin": "*",
+                              "Access-Control-Allow-Headers": "Content-Type",
+                              "Access-Control-Allow-Methods": "*"
+                          },
+                          body: JSON.stringify({ message: 'User with this email already exists' }),
+                      };
+                  }
+          
+                  const newUserParams = {
+                      TableName: process.env.USERS_TABLE_NAME,
+                      Item: marshall({
+                          'email': eventBody.email,
+                          'password': eventBody.password,
+                          'firstname': eventBody.firstname,
+                          'lastname': eventBody.lastname,
+                          'profilepicture': eventBody.profilepicture,
+                      })
+                  };
+          
+                  await db.send(new PutItemCommand(newUserParams));
+          
+                  response.body = JSON.stringify({
+                      message: "User successfully registered.",
+                      email: eventBody.email,
+                      firstname: eventBody.firstname,
+                      lastname: eventBody.lastname,
+                      profilepicture: eventBody.profilepicture
+                  });
+              } catch (e) {
+                  console.error(e);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({
+                      message: "Failed to register user.",
+                      errorMsg: e.message,
+                      errorStack: e.stack,
+                  });
+              }
+              return response;
+          };
+
+
+  # Signup gateway resource
+  ApiGatewayResourceSignup:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: signup-user
+
+  # Signup Method
+  ApiGatewayMethodSignup:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceSignup
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceSignup
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Signup Lambda Permission
+  SignupFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SignupFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  # Get user profile Lambda function
+  GetUserProfileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+              const response = {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                }
+              };
+
+              try {
+                            const eventBody = event.queryStringParameters;
+
+                  const email =eventBody.email;
+
+                  const params = {
+                      TableName: process.env.USERS_TABLE_NAME,
+                      Key: {
+                          'email': { S: email }
+                      }
+                  };
+
+                  const user = await db.send(new GetItemCommand(params));
+
+                  if (!user.Item) {
+                    return {
+                      statusCode: 404,
+                      headers: {
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Headers": "Content-Type",
+                        "Access-Control-Allow-Methods": "*"
+                      },
+                      body: JSON.stringify({ message: 'User not found' }),
+                    };
+                  }
+
+                  response.body = JSON.stringify({
+                      message: "Successfully retrieved user profile.",
+                      data: unmarshall(user.Item),
+                  });
+              } catch (e) {
+                  console.error(e);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({
+                      message: "Failed to get user profile.",
+                      errorMsg: e.message,
+                      errorStack: e.stack,
+                  });
+              }
+              return response;
+          };
+
+
+  # Get user profile gateway resource
+  ApiGatewayResourceUserProfile:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: user-profile
+
+  # Get user profile Method
+  ApiGatewayMethodUserProfile:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceUserProfile
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceUserProfile
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUserProfileFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Get user profile Lambda Permission
+  GetUserProfileFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GetUserProfileFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  # Comic Creation Lambda function
+  ComicCreationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x  # Adjust runtime version as needed
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+          SQS_QUEUE_NAME: !Ref ComicProcessingQueue
+          SuperheroTopicArn: !Ref SuperheroTopic
+          FantasyTopicArn: !Ref FantasyTopic
+          SciFiTopicArn: !Ref SciFiTopic
+          MysteryTopicArn: !Ref MysteryTopic
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall } = require('@aws-sdk/util-dynamodb');
+          const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+          const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+          
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          const sqs = new SQSClient({ region: process.env.AWS_REGION });
+          const sns = new SNSClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+              const response = {
+                  statusCode: 200,
+                  headers: {
+                      "Access-Control-Allow-Origin": "*",
+                      "Access-Control-Allow-Headers": "Content-Type",
+                      "Access-Control-Allow-Methods": "*"
+                  }
+              };
+          
+              try {
+                  const eventBody = JSON.parse(event.body);
+          
+                  // Check if comic with the same ID exists
+                  const existingComicParams = {
+                      TableName: process.env.COMIC_TABLE_NAME,
+                      Key: {
+                          'id': { S: eventBody.id }
+                      }
+                  };
+          
+                  const existingComic = await db.send(new GetItemCommand(existingComicParams));
+          
+                  if (existingComic.Item) {
+                      return {
+                          statusCode: 400,
+                          headers: {
+                              "Access-Control-Allow-Origin": "*",
+                              "Access-Control-Allow-Headers": "Content-Type",
+                              "Access-Control-Allow-Methods": "*"
+                          },
+                          body: JSON.stringify({ message: 'Comic with this ID already exists' }),
+                      };
+                  }
+          
+                  // Prepare new comic item
+                  const newComicParams = {
+                      TableName: process.env.COMIC_TABLE_NAME,
+                      Item: marshall({
+                          'id': eventBody.id,
+                          'name': eventBody.name,
+                          'author': eventBody.author,
+                          'category': eventBody.category,
+                          'comicText': eventBody.comicText,
+                          'createdAt': new Date().toISOString(),
+                          'updatedAt': new Date().toISOString(),
+                          'image': eventBody.image,
+                          'description': eventBody.description,
+                          'pdfUrl': eventBody.pdfUrl || null
+                      })
+                  };
+          
+                  await db.send(new PutItemCommand(newComicParams));
+          
+                  response.body = JSON.stringify({
+                      message: "Comic successfully created.",
+                      comicId: eventBody.id,
+                      name: eventBody.name,
+                      author: eventBody.author
+                  });
+          
+                  // Publish to SNS topic based on category
+                  let topicArn;
+                  switch (eventBody.category) {
+                      case 'Superhero':
+                          topicArn = process.env.SuperheroTopicArn;
+                          break;
+                      case 'Fantasy':
+                          topicArn = process.env.FantasyTopicArn;
+                          break;
+                      case 'Sci-Fi':
+                          topicArn = process.env.SciFiTopicArn;
+                          break;
+                      case 'Mystery':
+                          topicArn = process.env.MysteryTopicArn;
+                          break;
+                      default:
+                          throw new Error(`Unsupported category: ${eventBody.category}`);
+                  }
+          
+                  const snsParams = {
+                      TopicArn: topicArn,
+                      Message: JSON.stringify(eventBody)
+                  };
+          
+                  await sns.send(new PublishCommand(snsParams));
+          
+                  // Send message to SQS queue (optional)
+                  if (process.env.SQS_QUEUE_NAME) {
+                      const sqsParams = {
+                          QueueUrl: process.env.SQS_QUEUE_NAME,
+                          MessageBody: JSON.stringify(eventBody)
+                      };
+          
+                      await sqs.send(new SendMessageCommand(sqsParams));
+                  }
+          
+              } catch (e) {
+                  console.error(e);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({
+                      message: "Failed to create comic.",
+                      errorMsg: e.message,
+                      errorStack: e.stack,
+                  });
+              }
+          
+              return response;
+          };
+  
+
+  # Comic Creation Gateway resource
+  ApiGatewayResourceComicCreation:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: create-comic
+
+  # Comic Creation Method
+  ApiGatewayMethodComicCreation:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceComicCreation
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceComicCreation
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ComicCreationFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Comic Creation Lambda Permission
+  ComicCreationFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ComicCreationFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  GetComicFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x  # Adjust runtime version as needed
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, ScanCommand } = require('@aws-sdk/client-dynamodb');
+          const { unmarshall } = require('@aws-sdk/util-dynamodb');
+          
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          
+          exports.handler = async (event) => {
+            const response = {
+              statusCode: 200,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Allow-Methods": "*"
+              }
+            };
+          
+            try {
+              const { lastEvaluatedKey } = event.queryStringParameters || {};
+              const limit = 20;
+          
+              const params = {
+                TableName: process.env.COMIC_TABLE_NAME,
+                Limit: limit,
+                ExclusiveStartKey: lastEvaluatedKey ? JSON.parse(decodeURIComponent(lastEvaluatedKey)) : undefined
+              };
+          
+              const data = await db.send(new ScanCommand(params));
+              const comics = data.Items.map(item => unmarshall(item));
+          
+              response.body = JSON.stringify({
+                message: "Successfully retrieved comics.",
+                data: comics,
+                lastEvaluatedKey: data.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(data.LastEvaluatedKey)) : null
+              });
+            } catch (e) {
+              console.error(e);
+              response.statusCode = 500;
+              response.body = JSON.stringify({
+                message: "Failed to get comics.",
+                errorMsg: e.message,
+                errorStack: e.stack,
+              });
+            }
+            return response;
+          };
+
+  # API Gateway resource for comics
+  ApiGatewayResourceComic:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: comics
+
+  # API Gateway method for retrieving comics
+  ApiGatewayMethodComic:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceComic
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceComic
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetComicFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Lambda permission for API Gateway to invoke GetComicFunction
+  GetComicFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GetComicFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  # Lambda Function to like a comic
+  LikeComicFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x  # Adjust runtime version as needed
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            const response = {
+              statusCode: 200,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Allow-Methods": "*"
+              }
+            };
+
+            try {
+              const { comicId } = JSON.parse(event.body);
+
+              const params = {
+                TableName: process.env.COMIC_TABLE_NAME,
+                Key: marshall({ id: comicId }),
+                UpdateExpression: "SET #likes = if_not_exists(#likes, :zero) + :incr",
+                ExpressionAttributeNames: {
+                  "#likes": "likes"
+                },
+                ExpressionAttributeValues: marshall({
+                  ":incr": 1,
+                  ":zero": 0
+                }),
+                ReturnValues: "UPDATED_NEW"
+              };
+
+              const data = await db.send(new UpdateItemCommand(params));
+              const updatedComic = unmarshall(data.Attributes);
+
+              response.body = JSON.stringify({
+                message: "Successfully liked the comic.",
+                data: updatedComic,
+              });
+            } catch (e) {
+              console.error(e);
+              response.statusCode = 500;
+              response.body = JSON.stringify({
+                message: "Failed to like the comic.",
+                errorMsg: e.message,
+                errorStack: e.stack,
+              });
+            }
+            return response;
+          };
+
+
+  # API Gateway Resource for liking a comic
+  ApiGatewayResourceLikeComic:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: like-comic
+
+  # API Gateway Method for liking a comic
+  ApiGatewayMethodLikeComic:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceLikeComic
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceLikeComic
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LikeComicFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Lambda Permission for API Gateway to invoke LikeComicFunction
+  LikeComicFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LikeComicFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+  # Lambda Function to subscribe users to SNS topics and update DynamoDB
+  SubscribeToComicTopicFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          SuperheroTopicArn: !Ref SuperheroTopic
+          FantasyTopicArn: !Ref FantasyTopic
+          SciFiTopicArn: !Ref SciFiTopic
+          MysteryTopicArn: !Ref MysteryTopic
+          USER_TABLE_NAME: !Ref UserTable # Replace with your DynamoDB table name
+      Code:
+        ZipFile: |
+          const { SNSClient, SubscribeCommand } = require('@aws-sdk/client-sns');
+                    const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+                    const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
+            
+            
+                    const snsClient = new SNSClient({ region: process.env.AWS_REGION });
+            const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+              let abc = ' ';
+              exports.handler = async (event) => {
+              const { email, category } = JSON.parse(event.body);
+              
+              try {
+              let topicArn;
+              switch (category) {
+              case 'Superhero':
+                topicArn = process.env.SuperheroTopicArn;
+                break;
+              case 'Fantasy':
+                topicArn = process.env.FantasyTopicArn;
+                break;
+              case 'Sci-Fi':
+                topicArn = process.env.SciFiTopicArn;
+                break;
+              case 'Mystery':
+                topicArn = process.env.MysteryTopicArn;
+                break;
+              default:
+                topicArn = process.env.SciFiTopicArn;
+            }
+              
+              // Subscribe user to SNS topic
+              const subscribeParams = {
+              Protocol: 'email',
+              TopicArn: topicArn,
+              Endpoint: email
+            };
+              const subscribeCommand = new SubscribeCommand(subscribeParams);
+              await snsClient.send(subscribeCommand);
+              
+              abc += email;
+              // Update user table in DynamoDB with subscribed topic
+              abc += category.toLowerCase();
+              abc += topicArn;
+              abc += "asdfasfsdfsdfsdfs::::";
+              
+              const params = {
+              TableName: process.env.USER_TABLE_NAME,
+              UpdateExpression: 'SET #topics.#category = :topicArn',
+              ExpressionAttributeNames: {
+                '#topics': 'topics',
+                '#category': category.toLowerCase()
+              },
+              ExpressionAttributeValues: marshall({
+                ':topicArn': topicArn
+            }),
+              ReturnValues: "UPDATED_NEW"
+            };
+              
+              const data = await db.send(new UpdateItemCommand(params));
+              const updatedUser = data.Attributes;
+              
+              
+              return {
+              statusCode: 200,
+              body: JSON.stringify({
+              message: `Successfully updated user with category ${category} and topicArn ${topicArn}.`,
+              data: updatedUser,
+            })
+              };
+              } catch (error) {
+              console.error('Error subscribing to SNS topic:', error);
+              return {
+              statusCode: 500,
+              body: JSON.stringify({ message: 'Failed to subscribe to SNS topic'+abc, error: error.message,stack:error.stack })
+            };
+            }
+            };
+
+
+  # API Gateway Resource for subscribing to comic topics
+  ApiGatewayResourceSubscribe:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: subscribe
+
+  # API Gateway Method for subscribing to comic topics
+  ApiGatewayMethodSubscribe:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceSubscribe
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceSubscribe
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SubscribeToComicTopicFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Lambda Permission for API Gateway to invoke SubscribeToComicTopicFunction
+  SubscribeToComicTopicFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SubscribeToComicTopicFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+  ApiGatewayMethodOptionsRoot:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceRoot
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      ApiKeyRequired: false
+      RequestParameters: { }
+      MethodResponses:
+        - ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": false
+            "method.response.header.Access-Control-Allow-Methods": false
+            "method.response.header.Access-Control-Allow-Origin": false
+          StatusCode: "200"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceRoot
+        IntegrationResponses:
+          - ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,POST,GET'"  # Update this with the allowed methods
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            StatusCode: "200"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        RequestTemplates:
+          "application/json": "{\"statusCode\": 200}"
+        TimeoutInMillis: 29000
+        Type: "MOCK"
+
+  # OPTIONS method for the root resource
+  ApiGatewayResourceRoot:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: "{proxy+}"
+
+  # Common Rest API Gateway for complete backend application.
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref Stage
+      ApiKeySourceType: "HEADER"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+
+  ComicProcessingFunctionSQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
+      FunctionName: 'term2-ComicProcessingFunction-d8d4R4u6TZnh'
+      BatchSize: 1  # Adjust batch size as per your requirement
+
+
+  # API Gateway Deployment to stage.
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayMethodLogin
+      - ApiGatewayMethodSignup
+      - ApiGatewayMethodUserProfile
+      - ApiGatewayMethodComic
+      - ApiGatewayMethodComicCreation
+      - ApiGatewayMethodLikeComic
+      - ApiGatewayMethodSubscribe
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Stage
+
+
+
+
+
+Outputs:
+
+  APIGatewayEndpoint:
+    Description: 'Endpoint URL of the API Gateway'
+    Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com'

@@ -1,0 +1,18 @@
+{
+  "name": "comic-processing-lambda",
+  "version": "1.0.0",
+  "description": "AWS Lambda function for processing comics",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.44.0",
+    "@aws-sdk/client-s3": "^3.44.0",
+    "@aws-sdk/util-dynamodb": "^3.44.0",
+    "pdfkit": "0.15.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+}
