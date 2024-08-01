@@ -55,7 +55,6 @@ Resources:
       BucketName: !Sub "comic-bucket-term-project"
       AccessControl: Private
 
-
   SuperheroTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -84,7 +83,7 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x
       MemorySize: 128
-      Timeout: 5
+      Timeout: 30
       Environment:
         Variables:
           USERS_TABLE_NAME: !Ref UserTable
@@ -163,6 +162,7 @@ Resources:
   
   
 
+
   # Get login gateway resource
   ApiGatewayResourceLogin:
     Type: AWS::ApiGateway::Resource
@@ -221,7 +221,7 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x
       MemorySize: 128
-      Timeout: 5
+      Timeout: 30
       Environment:
         Variables:
           USERS_TABLE_NAME: !Ref UserTable
@@ -299,6 +299,7 @@ Resources:
           };
 
 
+
   # Signup gateway resource
   ApiGatewayResourceSignup:
     Type: AWS::ApiGateway::Resource
@@ -357,56 +358,57 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x
       MemorySize: 128
-      Timeout: 5
+      Timeout: 30
       Environment:
         Variables:
           USERS_TABLE_NAME: !Ref UserTable
       Code:
         ZipFile: |
-          const { DynamoDBClient, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBClient, ScanCommand } = require('@aws-sdk/client-dynamodb');
           const { unmarshall } = require('@aws-sdk/util-dynamodb');
-
+          
           const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-
+          
           exports.handler = async (event) => {
               const response = {
-                statusCode: 200,
-                headers: {
-                  "Access-Control-Allow-Origin": "*",
-                  "Access-Control-Allow-Headers": "Content-Type",
-                  "Access-Control-Allow-Methods": "*"
-                }
+                  statusCode: 200,
+                  headers: {
+                      "Access-Control-Allow-Origin": "*",
+                      "Access-Control-Allow-Headers": "Content-Type",
+                      "Access-Control-Allow-Methods": "*"
+                  }
               };
-
+          
               try {
-                            const eventBody = event.queryStringParameters;
-
-                  const email =eventBody.email;
-
+                  console.log("Event:", JSON.stringify(event));
+          
+                  const eventBody = event.queryStringParameters;
+                  const email = eventBody.email;
+          
+                  console.log("Email:", email);
+          
+                  // Scan parameters
                   const params = {
                       TableName: process.env.USERS_TABLE_NAME,
-                      Key: {
-                          'email': { S: email }
+                      FilterExpression: 'email = :email',
+                      ExpressionAttributeValues: {
+                          ':email': { S: email }
                       }
                   };
-
-                  const user = await db.send(new GetItemCommand(params));
-
-                  if (!user.Item) {
-                    return {
-                      statusCode: 404,
-                      headers: {
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Headers": "Content-Type",
-                        "Access-Control-Allow-Methods": "*"
-                      },
-                      body: JSON.stringify({ message: 'User not found' }),
-                    };
+          
+                  const result = await db.send(new ScanCommand(params));
+          
+                  if (result.Items.length === 0) {
+                      return {
+                          statusCode: 404,
+                          headers: response.headers,
+                          body: JSON.stringify({ message: 'User not found' }),
+                      };
                   }
-
+          
                   response.body = JSON.stringify({
                       message: "Successfully retrieved user profile.",
-                      data: unmarshall(user.Item),
+                      data: unmarshall(result.Items[0]),
                   });
               } catch (e) {
                   console.error(e);
@@ -419,6 +421,7 @@ Resources:
               }
               return response;
           };
+
 
 
   # Get user profile gateway resource
@@ -479,7 +482,7 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x  # Adjust runtime version as needed
       MemorySize: 128
-      Timeout: 5
+      Timeout: 300
       Environment:
         Variables:
           COMIC_TABLE_NAME: !Ref ComicTable
@@ -488,16 +491,20 @@ Resources:
           FantasyTopicArn: !Ref FantasyTopic
           SciFiTopicArn: !Ref SciFiTopic
           MysteryTopicArn: !Ref MysteryTopic
+          BUCKET_NAME: !Ref ComicS3Bucket
       Code:
         ZipFile: |
           const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
           const { marshall } = require('@aws-sdk/util-dynamodb');
           const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
           const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const crypto = require('crypto');
           
           const db = new DynamoDBClient({ region: process.env.AWS_REGION });
           const sqs = new SQSClient({ region: process.env.AWS_REGION });
           const sns = new SNSClient({ region: process.env.AWS_REGION });
+          const s3 = new S3Client({ region: process.env.AWS_REGION });
           
           exports.handler = async (event) => {
               const response = {
@@ -535,6 +542,22 @@ Resources:
                   }
           
                   // Prepare new comic item
+                  let pdfUrl = null;
+                  if (eventBody.pdfFile) {
+                      const pdfData = Buffer.from(eventBody.pdfFile, 'base64');
+                      const pdfKey = `comics/${eventBody.id}.pdf`;
+          
+                      const uploadParams = {
+                          Bucket: process.env.BUCKET_NAME,
+                          Key: pdfKey,
+                          Body: pdfData,
+                          ContentType: 'application/pdf'
+                      };
+          
+                      await s3.send(new PutObjectCommand(uploadParams));
+                      pdfUrl = `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}`;
+                  }
+          
                   const newComicParams = {
                       TableName: process.env.COMIC_TABLE_NAME,
                       Item: marshall({
@@ -542,12 +565,12 @@ Resources:
                           'name': eventBody.name,
                           'author': eventBody.author,
                           'category': eventBody.category,
-                          'comicText': eventBody.comicText,
+                          'comicText': eventBody.comicText || null,
                           'createdAt': new Date().toISOString(),
                           'updatedAt': new Date().toISOString(),
                           'image': eventBody.image,
                           'description': eventBody.description,
-                          'pdfUrl': eventBody.pdfUrl || null
+                          'pdfUrl': pdfUrl
                       })
                   };
           
@@ -579,18 +602,23 @@ Resources:
                           throw new Error(`Unsupported category: ${eventBody.category}`);
                   }
           
+                  // Remove pdfFile from the eventBody
+                  const snsMessageBody = { ...eventBody };
+                  delete snsMessageBody.pdfFile;
+                  delete snsMessageBody.comicText;
+                            
                   const snsParams = {
                       TopicArn: topicArn,
-                      Message: JSON.stringify(eventBody)
+                      Message: JSON.stringify(snsMessageBody)
                   };
           
                   await sns.send(new PublishCommand(snsParams));
           
                   // Send message to SQS queue (optional)
-                  if (process.env.SQS_QUEUE_NAME) {
+                  if (process.env.SQS_QUEUE_NAME && pdfUrl ==null ) {
                       const sqsParams = {
                           QueueUrl: process.env.SQS_QUEUE_NAME,
-                          MessageBody: JSON.stringify(eventBody)
+                          MessageBody: JSON.stringify(snsMessageBody)
                       };
           
                       await sqs.send(new SendMessageCommand(sqsParams));
@@ -608,7 +636,10 @@ Resources:
           
               return response;
           };
+
+
   
+
 
   # Comic Creation Gateway resource
   ApiGatewayResourceComicCreation:
@@ -667,7 +698,7 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x  # Adjust runtime version as needed
       MemorySize: 128
-      Timeout: 5
+      Timeout: 30
       Environment:
         Variables:
           COMIC_TABLE_NAME: !Ref ComicTable
@@ -717,6 +748,7 @@ Resources:
             }
             return response;
           };
+
 
   # API Gateway resource for comics
   ApiGatewayResourceComic:
@@ -776,7 +808,7 @@ Resources:
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x  # Adjust runtime version as needed
       MemorySize: 128
-      Timeout: 5
+      Timeout: 30
       Environment:
         Variables:
           COMIC_TABLE_NAME: !Ref ComicTable
@@ -834,6 +866,7 @@ Resources:
           };
 
 
+
   # API Gateway Resource for liking a comic
   ApiGatewayResourceLikeComic:
     Type: AWS::ApiGateway::Resource
@@ -883,7 +916,7 @@ Resources:
       FunctionName: !GetAtt LikeComicFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
-  # Lambda Function to subscribe users to SNS topics and update DynamoDB
+
   SubscribeToComicTopicFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -898,86 +931,88 @@ Resources:
           FantasyTopicArn: !Ref FantasyTopic
           SciFiTopicArn: !Ref SciFiTopic
           MysteryTopicArn: !Ref MysteryTopic
-          USER_TABLE_NAME: !Ref UserTable # Replace with your DynamoDB table name
+          USER_TABLE_NAME: !Ref UserTable
       Code:
         ZipFile: |
           const { SNSClient, SubscribeCommand } = require('@aws-sdk/client-sns');
-                    const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
-                    const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
-            
-            
-                    const snsClient = new SNSClient({ region: process.env.AWS_REGION });
-            const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-              let abc = ' ';
-              exports.handler = async (event) => {
-              const { email, category } = JSON.parse(event.body);
-              
-              try {
-              let topicArn;
-              switch (category) {
-              case 'Superhero':
-                topicArn = process.env.SuperheroTopicArn;
-                break;
-              case 'Fantasy':
-                topicArn = process.env.FantasyTopicArn;
-                break;
-              case 'Sci-Fi':
-                topicArn = process.env.SciFiTopicArn;
-                break;
-              case 'Mystery':
-                topicArn = process.env.MysteryTopicArn;
-                break;
-              default:
-                topicArn = process.env.SciFiTopicArn;
-            }
-              
-              // Subscribe user to SNS topic
-              const subscribeParams = {
-              Protocol: 'email',
-              TopicArn: topicArn,
-              Endpoint: email
-            };
-              const subscribeCommand = new SubscribeCommand(subscribeParams);
-              await snsClient.send(subscribeCommand);
-              
-              abc += email;
-              // Update user table in DynamoDB with subscribed topic
-              abc += category.toLowerCase();
-              abc += topicArn;
-              abc += "asdfasfsdfsdfsdfs::::";
-              
-              const params = {
-              TableName: process.env.USER_TABLE_NAME,
-              UpdateExpression: 'SET #topics.#category = :topicArn',
-              ExpressionAttributeNames: {
-                '#topics': 'topics',
-                '#category': category.toLowerCase()
-              },
-              ExpressionAttributeValues: marshall({
-                ':topicArn': topicArn
-            }),
-              ReturnValues: "UPDATED_NEW"
-            };
-              
-              const data = await db.send(new UpdateItemCommand(params));
-              const updatedUser = data.Attributes;
-              
-              
-              return {
-              statusCode: 200,
-              body: JSON.stringify({
-              message: `Successfully updated user with category ${category} and topicArn ${topicArn}.`,
-              data: updatedUser,
-            })
-              };
-              } catch (error) {
-              console.error('Error subscribing to SNS topic:', error);
-              return {
-              statusCode: 500,
-              body: JSON.stringify({ message: 'Failed to subscribe to SNS topic'+abc, error: error.message,stack:error.stack })
-            };
-            }
-            };
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall } = require('@aws-sdk/util-dynamodb');
+  
+          const snsClient = new SNSClient({ region: process.env.AWS_REGION });
+          const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
+  
+          exports.handler = async (event) => {
+           console.log('Event received:', event);
+          
+           const { email, category } = JSON.parse(event.body);
+           console.log('Parsed event body:', { email, category });
+          
+           let topicArn;
+           switch (category) {
+             case 'Superhero':
+               topicArn = process.env.SuperheroTopicArn;
+               break;
+             case 'Fantasy':
+               topicArn = process.env.FantasyTopicArn;
+               break;
+             case 'Sci-Fi':
+               topicArn = process.env.SciFiTopicArn;
+               break;
+             case 'Mystery':
+               topicArn = process.env.MysteryTopicArn;
+               break;
+             default:
+               return {
+                 statusCode: 400,
+                 body: JSON.stringify({ message: 'Invalid category provided' }),
+               };
+           }
+          
+           try {
+             // Subscribe user to SNS topic
+             const subscribeParams = {
+               Protocol: 'email',
+               TopicArn: topicArn,
+               Endpoint: email,
+             };
+             const subscribeCommand = new SubscribeCommand(subscribeParams);
+             await snsClient.send(subscribeCommand);
+             console.log('User subscribed to SNS topic:', { email, topicArn });
+          
+             // Update user table in DynamoDB with subscribed topic
+             const params = {
+               TableName: process.env.USER_TABLE_NAME,
+               Key: { email: { S: email } },
+               UpdateExpression: 'SET category = :category',
+               ExpressionAttributeValues: {
+                 ':category': { S: category.toLowerCase() },
+               }
+             };
+             const data = await dbClient.send(new UpdateItemCommand(params));
+             const updatedUser = data.Attributes;
+             console.log('User table updated in DynamoDB:', updatedUser);
+          
+             return {
+               statusCode: 200,
+               body: JSON.stringify({
+                 message: `Successfully updated user with category ${category} and topicArn ${topicArn}.`,
+                 data: updatedUser,
+               }),
+             };
+           } catch (error) {
+             console.error('Error subscribing to SNS topic or updating DynamoDB:', error);
+             return {
+               statusCode: 500,
+               body: JSON.stringify({
+                 message: 'Failed to subscribe to SNS topic or update DynamoDB',
+                 error: error.message,
+                 stack: error.stack,
+               }),
+             };
+           }
+          };
+
+
 
 
   # API Gateway Resource for subscribing to comic topics
@@ -1030,6 +1065,106 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
+  UploadFileToS3Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ComicS3Bucket
+      Code:
+        ZipFile: |
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+
+          const s3Client = new S3Client({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            console.log('Event received:', event);
+
+            const { filename, fileContent, contentType } = JSON.parse(event.body);
+            const bucketName = process.env.BUCKET_NAME;
+
+            try {
+              const putObjectParams = {
+                Bucket: bucketName,
+                Key: filename,
+                Body: Buffer.from(fileContent, 'base64'), // Assuming fileContent is base64 encoded
+                ContentType: contentType
+              };
+
+              const putObjectCommand = new PutObjectCommand(putObjectParams);
+              await s3Client.send(putObjectCommand);
+
+              return {
+                statusCode: 200,
+                body: JSON.stringify({
+                  message: `Successfully uploaded file ${filename} to ${bucketName}.`
+                })
+              };
+            } catch (error) {
+              console.error('Error uploading file to S3:', error);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({
+                  message: 'Failed to upload file to S3',
+                  error: error.message,
+                  stack: error.stack
+                })
+              };
+            }
+          };
+
+
+  ApiGatewayResourceUpload:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: upload
+
+  ApiGatewayMethodUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceUpload
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceUpload
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadFileToS3Function.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  UploadFileToS3FunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt UploadFileToS3Function.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
   ApiGatewayMethodOptionsRoot:
     Type: "AWS::ApiGateway::Method"
@@ -1080,13 +1215,112 @@ Resources:
         Types:
           - "REGIONAL"
 
+
+
+  ComicProcessingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      FunctionName: ComicProcessingFunction
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+          BUCKET_NAME: !Ref ComicS3Bucket
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+          const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
+          const PDFDocument = require('pdfkit');
+          const { Readable } = require('stream');
+          const { unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+          const s3 = new S3Client({ region: process.env.AWS_REGION });
+          const polly = new PollyClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            for (const record of event.Records) {
+              const { body } = record;
+              const comic = JSON.parse(body);
+              const comicId = comic.id.S;
+              const comicText = comic.comicText.S;
+
+              // Generate PDF from comic text
+              const pdfDoc = new PDFDocument();
+              const pdfStream = new Readable();
+              pdfStream._read = () => {}; // No-op
+              pdfDoc.pipe(pdfStream);
+              pdfDoc.text(comicText);
+              pdfDoc.end();
+
+              const pdfBuffer = await new Promise((resolve, reject) => {
+                const buffers = [];
+                pdfStream.on('data', buffers.push.bind(buffers));
+                pdfStream.on('end', () => resolve(Buffer.concat(buffers)));
+                pdfStream.on('error', reject);
+              });
+
+              const pdfKey = `comics/${comicId}.pdf`;
+              await s3.send(new PutObjectCommand({
+                Bucket: process.env.S3_BUCKET_NAME,
+                Key: pdfKey,
+                Body: pdfBuffer,
+                ContentType: 'application/pdf'
+              }));
+
+              // Generate MP3 from comic text
+              const pollyParams = {
+                OutputFormat: 'mp3',
+                Text: comicText,
+                VoiceId: 'Joanna'
+              };
+              const pollyCommand = new SynthesizeSpeechCommand(pollyParams);
+              const pollyResponse = await polly.send(pollyCommand);
+
+              const mp3Key = `comics/${comicId}.mp3`;
+              await s3.send(new PutObjectCommand({
+                Bucket: process.env.S3_BUCKET_NAME,
+                Key: mp3Key,
+                Body: pollyResponse.AudioStream,
+                ContentType: 'audio/mpeg'
+              }));
+
+              // Update DynamoDB with S3 URLs
+              const updateParams = {
+                TableName: process.env.COMIC_TABLE_NAME,
+                Key: { id: { S: comicId } },
+                UpdateExpression: "SET pdfUrl = :pdfUrl, mp3Url = :mp3Url",
+                ExpressionAttributeValues: {
+                  ":pdfUrl": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${pdfKey}` },
+                  ":mp3Url": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${mp3Key}` }
+                }
+              };
+              await db.send(new UpdateItemCommand(updateParams));
+            }
+          };
+
+
+
+
+  ComicProcessingFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt ComicProcessingQueue.Arn
+
   ComicProcessingFunctionSQSEventSourceMapping:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
       EventSourceArn: !GetAtt ComicProcessingQueue.Arn
-      FunctionName: 'term2-ComicProcessingFunction-d8d4R4u6TZnh'
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
       BatchSize: 1  # Adjust batch size as per your requirement
-
 
   # API Gateway Deployment to stage.
   ApiGatewayDeployment:
@@ -1099,6 +1333,7 @@ Resources:
       - ApiGatewayMethodComicCreation
       - ApiGatewayMethodLikeComic
       - ApiGatewayMethodSubscribe
+      - ApiGatewayMethodUpload
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Stage

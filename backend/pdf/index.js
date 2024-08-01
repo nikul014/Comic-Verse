@@ -25,7 +25,7 @@ exports.handler = async (event) => {
       const doc = new PDFDocument();
       const texts = ''+comicText;
       // Add text to the document
-      for (const textLine of comicText.split('\n')) {
+      for (const textLine of texts.split('\n')) {
         doc.text(textLine);
       }
 

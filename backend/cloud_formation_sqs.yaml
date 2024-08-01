@@ -5,7 +5,7 @@ Description: CloudFormation template for Lab-Activity
 Parameters:
   Stage:
     Type: String
-    Default: term2
+    Default: dev
   RoleARN:
     Type: String
     Default: "arn:aws:iam::998689998714:role/LabRole"
@@ -18,14 +18,8 @@ Resources:
   ComicProcessingQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub "ComicProcessingQueue-${Stage}"
+      QueueName: !Sub "ComicProcessingQueue"
       VisibilityTimeout: 70  # Set the visibility timeout slightly higher than Lambda function timeout
-
-  ComicS3Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "comic-bucket-${Stage}"
-      AccessControl: Private
 
   ComicProcessingFunction:
     Type: AWS::Lambda::Function
@@ -33,12 +27,13 @@ Resources:
       Handler: "index.handler"
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x
+      FunctionName: ComicProcessingFunction
       MemorySize: 128
       Timeout: 60
       Environment:
         Variables:
-          COMIC_TABLE_NAME: "ComicTable-term1"
-          S3_BUCKET_NAME: !Ref ComicS3Bucket
+          COMIC_TABLE_NAME: "ComicTable"
+          S3_BUCKET_NAME: "comic-bucket-term-project"
       Code:
         ZipFile: |
           const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
@@ -112,6 +107,7 @@ Resources:
               await db.send(new UpdateItemCommand(updateParams));
             }
           };
+
 
 
 
