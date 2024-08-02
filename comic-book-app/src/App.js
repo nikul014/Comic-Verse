@@ -26,3 +26,17 @@ const App = () => {
 };
 
 export default App;
+
+
+/*
+
+Integrate the subscribe api in the profile - Done
+
+list of profile images - done
+update the profile images - done
+
+
+change ui
+s3 bucket enable the public access via console
+
+ */

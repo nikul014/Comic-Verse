@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for managing user subscriptions with Lambda functions, SNS, and API Gateway.
+
+# Predefined parameters
+Parameters:
+  Stage:
+    Type: String
+    Default: "sns-subscription"
+  Region:
+    Type: String
+    Default: "us-east-1"
+  SuperheroTopicArn:
+    Type: String
+    Description: "arn:aws:sns:us-east-1:998689998714:term3-SuperheroTopic-AcfLvKDy6bWH"
+  FantasyTopicArn:
+    Type: String
+    Description: "arn:aws:sns:us-east-1:998689998714:term3-FantasyTopic-VZ0wYBlwu4m8"
+  SciFiTopicArn:
+    Type: String
+    Description: "arn:aws:sns:us-east-1:998689998714:term3-SciFiTopic-8YaWWl1pZB3h"
+  MysteryTopicArn:
+    Type: String
+    Description: "arn:aws:sns:us-east-1:998689998714:term3-MysteryTopic-YXYl1fezzklS"
+  RoleARN:
+    Type: String
+    Default: "arn:aws:iam::998689998714:role/LabRole"
+
+Resources:
+  UserSubscriptionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: user_subscription
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: subscription_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+        - AttributeName: subscription_name
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+
+  # Common Rest API Gateway for complete backend application.
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref Stage
+      ApiKeySourceType: "HEADER"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+
+
+  ConfirmSubscriptionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          SuperheroTopicArn: !Ref SuperheroTopicArn
+          FantasyTopicArn: !Ref FantasyTopicArn
+          SciFiTopicArn: !Ref SciFiTopicArn
+          MysteryTopicArn: !Ref MysteryTopicArn
+          USER_TABLE_NAME: !Ref UserSubscriptionTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, GetItemCommand, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { SNSClient, SubscribeCommand } = require('@aws-sdk/client-sns');
+
+          const snsClient = new SNSClient({ region: process.env.AWS_REGION });
+          const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            console.log('Event received:', event);
+
+            const { email, category, action } = JSON.parse(event.body);
+            console.log('Parsed event body:', { email, category, action });
+
+            let topicArn;
+            switch (category) {
+              case 'Superhero':
+                topicArn = process.env.SuperheroTopicArn;
+                break;
+              case 'Fantasy':
+                topicArn = process.env.FantasyTopicArn;
+                break;
+              case 'Sci-Fi':
+                topicArn = process.env.SciFiTopicArn;
+                break;
+              case 'Mystery':
+                topicArn = process.env.MysteryTopicArn;
+                break;
+              default:
+                return {
+                  statusCode: 400,
+                  body: JSON.stringify({ message: 'Invalid category provided' }),
+                };
+            }
+
+            const params = {
+              TableName: process.env.USER_TABLE_NAME,
+              Key: { email: { S: email } },
+            };
+
+            if (action === 'remove') {
+              const { Item } = await dbClient.send(new GetItemCommand(params));
+              if (Item) {
+                const unsubscribeParams = {
+                  SubscriptionArn: Item.subscriptionArn,
+                };
+                await snsClient.send(new UnsubscribeCommand(unsubscribeParams));
+
+                await dbClient.send(new DeleteItemCommand(params));
+                return {
+                  statusCode: 200,
+                  body: JSON.stringify({ message: 'Successfully unsubscribed and removed from database' }),
+                };
+              } else {
+                return {
+                  statusCode: 404,
+                  body: JSON.stringify({ message: 'No subscription found to remove' }),
+                };
+              }
+            } else {
+              const { Item } = await dbClient.send(new GetItemCommand(params));
+              if (Item) {
+                return {
+                  statusCode: 200,
+                  body: JSON.stringify({ message: 'Already subscribed' }),
+                };
+              }
+
+              const subscribeParams = {
+                Protocol: 'email',
+                TopicArn: topicArn,
+                Endpoint: email,
+              };
+              const subscribeCommand = new SubscribeCommand(subscribeParams);
+              const { SubscriptionArn } = await snsClient.send(subscribeCommand);
+
+              const putParams = {
+                TableName: process.env.USER_TABLE_NAME,
+                Item: {
+                  email: { S: email },
+                  subscription_name: { S: category },
+                  status: { S: 'send' },
+                  subscriptionArn: { S: SubscriptionArn },
+                },
+              };
+              await dbClient.send(new PutItemCommand(putParams));
+
+              return {
+                statusCode: 200,
+                body: JSON.stringify({ message: `Successfully updated user with category ${category} and topicArn ${topicArn}.` }),
+              };
+            }
+          };
+
+  SubscriptionStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          USER_TABLE_NAME: !Ref UserSubscriptionTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+
+          const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            console.log('Event received:', event);
+
+            const { email, category } = JSON.parse(event.body);
+
+            const params = {
+              TableName: process.env.USER_TABLE_NAME,
+              Key: { email: { S: email }, subscription_name: { S: category } },
+              UpdateExpression: 'SET #status = :status',
+              ExpressionAttributeNames: { '#status': 'status' },
+              ExpressionAttributeValues: { ':status': { S: 'accepted' } },
+              ReturnValues: 'ALL_NEW',
+            };
+
+            try {
+              const data = await dbClient.send(new UpdateItemCommand(params));
+              return {
+                statusCode: 200,
+                body: JSON.stringify({ message: 'Subscription status updated', data: data.Attributes }),
+              };
+            } catch (error) {
+              console.error('Error updating subscription status:', error);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({ message: 'Failed to update subscription status', error: error.message }),
+              };
+            }
+          };
+
+  # API Gateway Resource and Method for ConfirmSubscriptionFunction
+  ApiGatewayResourceConfirmSubscription:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: confirm-subscription
+
+  ApiGatewayMethodConfirmSubscription:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceConfirmSubscription
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceConfirmSubscription
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConfirmSubscriptionFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # API Gateway Resource and Method for SubscriptionStatusFunction
+  ApiGatewayResourceSubscriptionStatus:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: subscription-status
+
+  ApiGatewayMethodSubscriptionStatus:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceSubscriptionStatus
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceSubscriptionStatus
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SubscriptionStatusFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Lambda Permissions for API Gateway
+  ConfirmSubscriptionFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ConfirmSubscriptionFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+  SubscriptionStatusFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SubscriptionStatusFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+  # API Gateway Deployment to stage.
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayMethodConfirmSubscription
+      - ApiGatewayMethodSubscriptionStatus
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Stage
+
+Outputs:
+  APIGatewayEndpoint:
+    Description: 'Endpoint URL of the API Gateway'
+    Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}'

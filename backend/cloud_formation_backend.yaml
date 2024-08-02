@@ -300,6 +300,7 @@ Resources:
 
 
 
+
   # Signup gateway resource
   ApiGatewayResourceSignup:
     Type: AWS::ApiGateway::Resource
@@ -421,6 +422,7 @@ Resources:
               }
               return response;
           };
+
 
 
 
@@ -639,6 +641,7 @@ Resources:
 
 
   
+
 
 
   # Comic Creation Gateway resource
@@ -867,6 +870,7 @@ Resources:
 
 
 
+
   # API Gateway Resource for liking a comic
   ApiGatewayResourceLikeComic:
     Type: AWS::ApiGateway::Resource
@@ -934,88 +938,199 @@ Resources:
           USER_TABLE_NAME: !Ref UserTable
       Code:
         ZipFile: |
-          const { SNSClient, SubscribeCommand } = require('@aws-sdk/client-sns');
-          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
-          const { marshall } = require('@aws-sdk/util-dynamodb');
-  
-          const snsClient = new SNSClient({ region: process.env.AWS_REGION });
-          const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
-  
-          exports.handler = async (event) => {
-           console.log('Event received:', event);
-          
-           const { email, category } = JSON.parse(event.body);
-           console.log('Parsed event body:', { email, category });
-          
-           let topicArn;
-           switch (category) {
-             case 'Superhero':
-               topicArn = process.env.SuperheroTopicArn;
-               break;
-             case 'Fantasy':
-               topicArn = process.env.FantasyTopicArn;
-               break;
-             case 'Sci-Fi':
-               topicArn = process.env.SciFiTopicArn;
-               break;
-             case 'Mystery':
-               topicArn = process.env.MysteryTopicArn;
-               break;
-             default:
-               return {
-                 statusCode: 400,
-                 body: JSON.stringify({ message: 'Invalid category provided' }),
-               };
-           }
-          
-           try {
-             // Subscribe user to SNS topic
-             const subscribeParams = {
-               Protocol: 'email',
-               TopicArn: topicArn,
-               Endpoint: email,
-             };
-             const subscribeCommand = new SubscribeCommand(subscribeParams);
-             await snsClient.send(subscribeCommand);
-             console.log('User subscribed to SNS topic:', { email, topicArn });
-          
-             // Update user table in DynamoDB with subscribed topic
-             const params = {
-               TableName: process.env.USER_TABLE_NAME,
-               Key: { email: { S: email } },
-               UpdateExpression: 'SET category = :category',
-               ExpressionAttributeValues: {
-                 ':category': { S: category.toLowerCase() },
-               }
-             };
-             const data = await dbClient.send(new UpdateItemCommand(params));
-             const updatedUser = data.Attributes;
-             console.log('User table updated in DynamoDB:', updatedUser);
-          
-             return {
-               statusCode: 200,
-               body: JSON.stringify({
-                 message: `Successfully updated user with category ${category} and topicArn ${topicArn}.`,
-                 data: updatedUser,
-               }),
-             };
-           } catch (error) {
-             console.error('Error subscribing to SNS topic or updating DynamoDB:', error);
-             return {
-               statusCode: 500,
-               body: JSON.stringify({
-                 message: 'Failed to subscribe to SNS topic or update DynamoDB',
-                 error: error.message,
-                 stack: error.stack,
-               }),
-             };
-           }
-          };
+          const { SNSClient, SubscribeCommand, UnsubscribeCommand, ListSubscriptionsByTopicCommand } = require('@aws-sdk/client-sns');
+                  const { DynamoDBClient, GetItemCommand, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+                
+                const snsClient = new SNSClient({ region: process.env.AWS_REGION });
+                const dbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
+                  
+                  exports.handler = async (event) => {
+                  
+                  
+                  const response = {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                }
+                };
+                  
+                  console.log('Event received:', event);
+                  
+                  const { email, category, action } = JSON.parse(event.body);
+                  console.log('Parsed event body:', { email, category, action });
+                  
+                  let topicArn;
+                  switch (category) {
+                case 'Superhero':
+                  topicArn = process.env.SuperheroTopicArn;
+                  break;
+                case 'Fantasy':
+                  topicArn = process.env.FantasyTopicArn;
+                  break;
+                case 'Sci-Fi':
+                  topicArn = process.env.SciFiTopicArn;
+                  break;
+                case 'Mystery':
+                  topicArn = process.env.MysteryTopicArn;
+                  break;
+                default:
+                  return {
+                  statusCode: 400,
+                  headers: response.headers,
+                  body: JSON.stringify({ message: 'Invalid category provided' }),
+                };
+                }
+                  
+                  try {
+                  // Retrieve current user from DynamoDB
+                  const getParams = {
+                TableName: process.env.USER_TABLE_NAME,
+                Key: { email: { S: email } },
+                };
+                  const { Item } = await dbClient.send(new GetItemCommand(getParams));
+                  
+                  // Check if the user exists
+                  if (!Item) {
+                  console.log('User not found:', email);
+                  return {
+                statusCode: 404,
+                  headers: response.headers,
+                body: JSON.stringify({ message: 'User not found' }),
+                };
+                }
+                  
+                  const existingCategories = Item?.category?.S || '';
+                  const categoriesArray = existingCategories.split(',').map(cat => cat.trim().toLowerCase());
+                  
+                  if (action === 'remove') {
+                  // Remove the category if it exists
+                  if (categoriesArray.includes(category.toLowerCase())) {
+                  // List subscriptions by topic to find the SubscriptionArn
+                  const listParams = {
+                TopicArn: topicArn,
+                };
+                  const listSubscriptionsCommand = new ListSubscriptionsByTopicCommand(listParams);
+                  const listSubscriptionsResponse = await snsClient.send(listSubscriptionsCommand);
+                  
+                  const subscription = listSubscriptionsResponse.Subscriptions.find(sub => sub.Endpoint === email);
+                  
+                  if (subscription && subscription.SubscriptionArn && subscription.SubscriptionArn.split(':').length >= 6) {
+                  const unsubscribeParams = {
+                SubscriptionArn: subscription.SubscriptionArn,
+                };
+                  const unsubscribeCommand = new UnsubscribeCommand(unsubscribeParams);
+                  await snsClient.send(unsubscribeCommand);
+                  console.log('User unsubscribed from SNS topic:', { email, topicArn });
+                }
+                  
+                  // Remove the category from the list
+                  const updatedCategories = categoriesArray.filter(cat => cat !== category.toLowerCase()).join(',');
+                  
+                  // Update the DynamoDB table
+                  const updateParams = {
+                TableName: process.env.USER_TABLE_NAME,
+                Key: { email: { S: email } },
+                UpdateExpression: 'SET category = :category',
+                ExpressionAttributeValues: {
+                  ':category': { S: updatedCategories },
+                },
+                ReturnValues: 'ALL_NEW',
+                };
+                  const data = await dbClient.send(new UpdateItemCommand(updateParams));
+                  const updatedUser = data.Attributes;
+                  console.log('User table updated in DynamoDB:', updatedUser);
+                  
+                  return {
+                statusCode: 200,
+                  headers: response.headers,
+                body: JSON.stringify({
+                  message: `Successfully removed category ${category} for user and unsubscribed from topicArn ${topicArn}.`,
+                  data: updatedUser,
+                }),
+                };
+                } else {
+                  console.log('Category not found in the user\'s subscription list.');
+                  return {
+                statusCode: 404,
+                  headers: response.headers,
+                body: JSON.stringify({
+                  message: `Category ${category} not found in user's subscription list.`,
+                }),
+                };
+                }
+                } else {
+                  // Check if the category already exists
+                  if (!categoriesArray.includes(category.toLowerCase())) {
+                  // Subscribe user to SNS topic
+                  const subscribeParams = {
+                Protocol: 'email',
+                TopicArn: topicArn,
+                Endpoint: email,
+                };
+                  const subscribeCommand = new SubscribeCommand(subscribeParams);
+                  await snsClient.send(subscribeCommand);
+                  console.log('User subscribed to SNS topic:', { email, topicArn });
+                  
+                  // Append the new category
+                  categoriesArray.push(category.toLowerCase());
+                  const updatedCategories = categoriesArray.join(',');
+                  
+                  // Update the DynamoDB table with the new category
+                  const updateParams = {
+                TableName: process.env.USER_TABLE_NAME,
+                Key: { email: { S: email } },
+                UpdateExpression: 'SET category = :category',
+                ExpressionAttributeValues: {
+                  ':category': { S: updatedCategories },
+                },
+                ReturnValues: 'ALL_NEW',
+                };
+                  const data = await dbClient.send(new UpdateItemCommand(updateParams));
+                  const updatedUser = data.Attributes;
+                  console.log('User table updated in DynamoDB:', updatedUser);
+                  
+                  return {
+                statusCode: 200,
+                  headers: response.headers,
+                body: JSON.stringify({
+                  message: `Successfully updated user with category ${category} and topicArn ${topicArn}.`,
+                  data: updatedUser,
+                }),
+                };
+                } else {
+                  console.log('Category already exists for the user.');
+                  return {
+                statusCode: 200,
+                  headers: response.headers,
+                body: JSON.stringify({
+                  message: `Category ${category} already exists for user.`,
+                }),
+                };
+                }
+                }
+                } catch (error) {
+                  console.error('Error subscribing/unsubscribing from SNS topic or updating DynamoDB:', error);
+                  return {
+                statusCode: 500,
+                  headers: response.headers,
+                body: JSON.stringify({
+                  message: 'Failed to subscribe/unsubscribe from SNS topic or update DynamoDB',
+                  error: error.message,
+                  stack: error.stack,
+                }),
+                };
+                }
+                };
 
 
 
 
-  # API Gateway Resource for subscribing to comic topics
+
+
+
+# API Gateway Resource for subscribing to comic topics
   ApiGatewayResourceSubscribe:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -1064,6 +1179,134 @@ Resources:
       FunctionName: !GetAtt SubscribeToComicTopicFunction.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+
+  # Lambda Function to update user profile
+  UpdateUserProfileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x  # Adjust runtime version as needed
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          USER_TABLE_NAME: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+          exports.handler = async (event) => {
+            const response = {
+              statusCode: 200,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Allow-Methods": "*"
+              }
+            };
+
+            try {
+              const { email, firstname, lastname, profilepicture } = JSON.parse(event.body);
+
+              const params = {
+                TableName: process.env.USER_TABLE_NAME,
+                Key: marshall({ email }),
+                UpdateExpression: "SET #fn = :fn, #ln = :ln, #pp = :pp",
+                ExpressionAttributeNames: {
+                  "#fn": "firstname",
+                  "#ln": "lastname",
+                  "#pp": "profilepicture"
+                },
+                ExpressionAttributeValues: marshall({
+                  ":fn": firstname || null,
+                  ":ln": lastname || null,
+                  ":pp": profilepicture || null
+                }),
+                ReturnValues: "UPDATED_NEW"
+              };
+
+              const data = await db.send(new UpdateItemCommand(params));
+              const updatedUser = unmarshall(data.Attributes);
+
+              response.body = JSON.stringify({
+                message: "Successfully updated the profile.",
+                data: updatedUser,
+              });
+            } catch (e) {
+              console.error(e);
+              response.statusCode = 500;
+              response.body = JSON.stringify({
+                message: "Failed to update the profile.",
+                errorMsg: e.message,
+                errorStack: e.stack,
+              });
+            }
+            return response;
+          };
+
+
+  # API Gateway Resource for updating user profile
+  ApiGatewayResourceUpdateUserProfile:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: update-profile
+
+  # API Gateway Method for updating user profile
+  ApiGatewayMethodUpdateUserProfile:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceUpdateUserProfile
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceUpdateUserProfile
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UpdateUserProfileFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Lambda Permission for API Gateway to invoke UpdateUserProfileFunction
+  UpdateUserProfileFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt UpdateUserProfileFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+
+
+
+
+
 
   UploadFileToS3Function:
     Type: AWS::Lambda::Function
@@ -1117,6 +1360,8 @@ Resources:
               };
             }
           };
+
+
 
 
   ApiGatewayResourceUpload:
@@ -1307,6 +1552,7 @@ Resources:
 
 
 
+
   ComicProcessingFunctionInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -1334,6 +1580,7 @@ Resources:
       - ApiGatewayMethodLikeComic
       - ApiGatewayMethodSubscribe
       - ApiGatewayMethodUpload
+      - ApiGatewayMethodUpdateUserProfile
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Stage
