@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Link } from 'react-router-dom';
-// Done
+import ComicCard from './ComicCard';
 
 const Dashboard = () => {
     const [comics, setComics] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
 
     useEffect(() => {
         const fetchComics = async () => {
@@ -23,37 +23,45 @@ const Dashboard = () => {
         fetchComics();
     }, []);
 
-    if (loading) return <div>Loading...</div>;
-    if (error) return <div>Error: {error}</div>;
+
+    if (loading) {
+        return (
+            <div className="flex justify-center items-center h-screen">
+                <div className="w-16 h-16 border-4 border-t-4 border-white rounded-full animate-spin"></div>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="flex justify-center items-center h-screen bg-gray-100">
+                <div className="bg-red-600 text-white p-4 rounded-lg shadow-lg">
+                    Error: {error}
+                </div>
+            </div>
+        );
+    }
 
     return (
-        <div className="container mx-auto p-4">
-            <h1 className="text-2xl mb-4">Dashboard</h1>
-            <div className="mb-4">
-                <Link to="/create-comic" className="bg-blue-500 text-white p-2 rounded mr-2 inline-block">Create Comic</Link>
-                <Link to="/profile" className="bg-green-500 text-white p-2 rounded inline-block">Profile</Link>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {comics.length > 0 ? (
-                    comics.map((comic) => (
-                        <div key={comic.id} className="border p-4 rounded">
-                            <h2 className="text-xl mb-2">{comic.name}</h2>
-                            <p>{comic.description}</p>
-                            <Link to={`/comics/${comic.id}`} state={{ comic }} className="text-blue-500">View Details</Link>
-                            <div className="mt-2">
-                                <button
-                                    onClick={() => handleLike(comic.id)}
-                                    className="bg-red-500 text-white p-2 rounded"
-                                >
-                                    Like
-                                </button>
-                            </div>
+        <div className="font-poppins antialiased text-gray-900 bg-white">
+
+            <main className="container mx-auto p-6 bg-white rounded-lg shadow-lg">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {comics.length > 0 ? (
+                        comics.map((comic) => (
+                            <ComicCard
+                                key={comic.id}
+                                comic={comic}
+                                handleLike={handleLike}
+                            />
+                        ))
+                    ) : (
+                        <div className="text-center col-span-full text-xl text-gray-500">
+                            No comics available
                         </div>
-                    ))
-                ) : (
-                    <div>No comics available</div>
-                )}
-            </div>
+                    )}
+                </div>
+            </main>
         </div>
     );
 };

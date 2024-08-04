@@ -1,12 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import React, {useEffect, useState} from 'react';
 import axios from 'axios';
+import ClipLoader from 'react-spinners/ClipLoader'; // For loading spinner
+import {toast} from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import {FaEdit} from 'react-icons/fa'; // Import the edit icon from react-icons
+import Switch from 'react-switch';
+import comicImage from "../assets/profilebackground.jpg";
 
 const Profile = () => {
     const [profile, setProfile] = useState(null);
-    const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [subscriptions, setSubscriptions] = useState({
-        "Sci-Fi": false,
+        "Sci-fi": false,
         "Fantasy": false,
         "Superhero": false,
         "Mystery": false
@@ -15,6 +20,7 @@ const Profile = () => {
     const [isEditing, setIsEditing] = useState(false);
     const [newFirstName, setNewFirstName] = useState('');
     const [newLastName, setNewLastName] = useState('');
+    const [actionLoading, setActionLoading] = useState(false); // Loader state for actions
 
     const email = "nikulpokukadiya1998@gmail.com";
 
@@ -33,15 +39,34 @@ const Profile = () => {
 
     useEffect(() => {
         const fetchProfile = async () => {
+            setActionLoading(true); // Start action loading
             try {
                 const response = await axios.get('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/user-profile', {
-                    params: { email }
+                    params: {email}
                 });
+
+                // Parse the comma-separated category data
+                const categories = response.data.data.category.split(',').filter(cat => cat); // Remove empty strings
+
                 setProfile(response.data.data);
-                setLoading(false);
+
+                // Update subscriptions state based on categories
+                setSubscriptions(prevState => {
+                    const updatedSubscriptions = {...prevState};
+                    categories.forEach(category => {
+                        const formattedCategory = category.charAt(0).toUpperCase() + category.slice(1); // Capitalize first letter
+                        if (updatedSubscriptions.hasOwnProperty(formattedCategory)) {
+                            updatedSubscriptions[formattedCategory] = true;
+                        }
+                    });
+                    return updatedSubscriptions;
+                });
+
+                setActionLoading(false);
             } catch (err) {
                 setError(err.message);
-                setLoading(false);
+                setActionLoading(false);
+                toast.error('Failed to load profile.');
             }
         };
 
@@ -49,6 +74,7 @@ const Profile = () => {
     }, [email]);
 
     const handleSubscriptionChange = async (category, isSubscribed) => {
+        setActionLoading(true); // Start action loading
         const action = isSubscribed ? "add" : "remove";
         try {
             await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/subscribe', {
@@ -60,17 +86,22 @@ const Profile = () => {
                 ...prevState,
                 [category]: isSubscribed
             }));
+            toast.success(`${category} subscription ${isSubscribed ? 'added' : 'removed'}`);
         } catch (err) {
             console.error('Subscription update failed', err.message);
+            toast.error('Subscription update failed.');
+        } finally {
+            setActionLoading(false); // Stop action loading
         }
     };
 
-    const handleCheckboxChange = (category) => {
+    const handleSwitchChange = (category) => {
         const isSubscribed = !subscriptions[category];
         handleSubscriptionChange(category, isSubscribed);
     };
 
     const updateProfilePicture = async (firstname, lastname, newProfilePicture) => {
+        setActionLoading(true); // Start action loading
         try {
             await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/editProfile', {
                 email,
@@ -80,17 +111,22 @@ const Profile = () => {
             });
             setProfile(prevProfile => ({
                 ...prevProfile,
-                firstname: firstname,
-                lastname: lastname,
+                firstname,
+                lastname,
                 profilepicture: newProfilePicture
             }));
             setShowAvatarPicker(false);
+            toast.success('Profile picture updated successfully.');
         } catch (err) {
             console.error('Profile picture update failed', err.message);
+            toast.error('Profile picture update failed.');
+        } finally {
+            setActionLoading(false); // Stop action loading
         }
     };
 
     const handleEditProfile = async () => {
+        setActionLoading(true); // Start action loading
         try {
             await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/editProfile', {
                 email,
@@ -104,116 +140,164 @@ const Profile = () => {
                 lastname: newLastName
             }));
             setIsEditing(false);
+            toast.success('Profile updated successfully.');
         } catch (err) {
             console.error('Profile update failed', err.message);
+            toast.error('Profile update failed.');
+        } finally {
+            setActionLoading(false); // Stop action loading
         }
     };
 
-    if (loading) return <div>Loading...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-    return (
-        <div className="container mx-auto p-4">
-            <h1 className="text-2xl mb-4">Profile</h1>
-            {profile ? (
-                <div className="bg-white p-6 rounded shadow-md">
-                    <div className="flex items-center mb-4 relative">
-                        <img
-                            src={profile["profilepicture"]}
-                            alt={`${profile["firstname"]} ${profile["lastname"]}`}
-                            className="w-24 h-24 rounded-full object-cover mr-4"
-                        />
-                        <button
-                            onClick={() => setShowAvatarPicker(!showAvatarPicker)}
-                            className="absolute bottom-0 right-0 bg-blue-500 text-white px-2 py-1 rounded-full text-sm"
-                        >
-                            Edit
-                        </button>
-                    </div>
-
-                    {showAvatarPicker && (
-                        <div className="flex flex-wrap gap-2 mt-4">
-                            {(profile.gender === 'male' ? maleAvatarUrls : femaleAvatarUrls).map((url, index) => (
-                                <img
-                                    key={index}
-                                    src={url}
-                                    alt={`Avatar ${index}`}
-                                    className="w-16 h-16 rounded-full object-cover cursor-pointer"
-                                    onClick={() => updateProfilePicture(profile.firstname, profile.lastname, url)}
-                                />
-                            ))}
-                        </div>
-                    )}
-
-                    <div className="mt-4">
-                        <h3 className="text-lg mb-2">Manage Subscriptions</h3>
-                        {['Sci-Fi', 'Fantasy', 'Superhero', 'Mystery'].map(category => (
-                            <div key={category} className="flex items-center mb-2">
-                                <input
-                                    type="checkbox"
-                                    id={category}
-                                    checked={subscriptions[category]}
-                                    onChange={() => handleCheckboxChange(category)}
-                                    className="mr-2"
-                                />
-                                <label htmlFor={category} className="text-gray-700">{category}</label>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="mt-4">
-                        {!isEditing ? (
-                            <div>
-                                <p className="text-lg mb-2">Name: {profile.firstname} {profile.lastname}</p>
-                                <button
-                                    onClick={() => {
-                                        setNewFirstName(profile.firstname);
-                                        setNewLastName(profile.lastname);
-                                        setIsEditing(true);
-                                    }}
-                                    className="bg-blue-500 text-white px-4 py-2 rounded-full"
-                                >
-                                    Edit Name
-                                </button>
-                            </div>
-                        ) : (
-                            <div>
-                                <h3 className="text-lg mb-2">Edit Name</h3>
-                                <input
-                                    type="text"
-                                    value={newFirstName}
-                                    onChange={(e) => setNewFirstName(e.target.value)}
-                                    className="border rounded p-2 mb-2 w-full"
-                                    placeholder="First Name"
-                                />
-                                <input
-                                    type="text"
-                                    value={newLastName}
-                                    onChange={(e) => setNewLastName(e.target.value)}
-                                    className="border rounded p-2 mb-2 w-full"
-                                    placeholder="Last Name"
-                                />
-                                <button
-                                    onClick={handleEditProfile}
-                                    className="bg-green-500 text-white px-4 py-2 rounded-full"
-                                >
-                                    Save
-                                </button>
-                                <button
-                                    onClick={() => setIsEditing(false)}
-                                    className="bg-red-500 text-white px-4 py-2 rounded-full ml-2"
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            ) : (
-                <div>No profile information available</div>
-            )}
+    if (actionLoading) return (
+        <div className="flex justify-center items-center h-screen">
+            <ClipLoader size={50} color={"#980000"} loading={actionLoading}/>
         </div>
     );
+
+    if (error) return (
+        <div className="flex justify-center items-center h-screen">
+            <p className="text-red-600 text-xl">{error}</p>
+        </div>
+    );
+
+    return (
+        <div className="w-full min-h-screen bg-cover bg-center" style={{backgroundImage: `url(${comicImage})`}}>
+
+            <div className="max-w-3xl min-h-screen mx-auto py-4 px-2">
+
+                {profile ? (
+                    <div className="bg-white min-h-screen p-6 rounded-lg shadow-lg">
+                        <div className="flex items-center mb-6">
+                            {/* Profile Image Section */}
+                            <div className="relative mr-6">
+                                <img
+                                    src={profile["profilepicture"]}
+                                    alt={`${profile["firstname"]} ${profile["lastname"]}`}
+                                    className="w-32 h-32 rounded-full object-cover border-2 border-gray-300"
+                                />
+                                <FaEdit
+                                    onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                                    className="absolute top-2 right-2 text-white bg-[#980000] p-1 rounded-full cursor-pointer shadow-sm transition-colors duration-200 hover:bg-red-800"
+                                    size={32}
+                                />
+                            </div>
+
+                            {/* User Details Section */}
+                            <div className="flex flex-col">
+                                <div
+                                    className="text-xl font-semibold">{profile["firstname"]} {profile["lastname"]}</div>
+                                <div className="text-gray-600">{profile["email"]}</div>
+                            </div>
+
+                        </div>
+
+                        {showAvatarPicker && (
+                            <div className="flex flex-wrap gap-4 mt-4">
+                                {(profile.gender === 'male' ? maleAvatarUrls : femaleAvatarUrls).map((url, index) => (
+                                    <img
+                                        key={index}
+                                        src={url}
+                                        alt={`Avatar ${index}`}
+                                        className="w-24 h-24 rounded-full object-cover cursor-pointer shadow-sm border-2 border-transparent transition-all duration-200 hover:border-[#980000]"
+                                        onClick={() => updateProfilePicture(profile.firstname, profile.lastname, url)}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                        {isEditing ? (
+                            <div className="flex justify-center items-center">
+                                <div
+                                    className="w-full md:w-1/2 p-8 flex flex-col justify-center bg-gray-100 rounded-lg shadow-3xl">
+                                    <h2 className="text-2xl font-bold text-center mb-6">Edit Profile</h2>
+                                    <form onSubmit={(e) => {
+                                        e.preventDefault();
+                                        handleEditProfile();
+                                    }}>
+                                        <div className="mb-4">
+                                            <label htmlFor="firstName"
+                                                   className="block text-gray-700 text-sm font-bold mb-2">First
+                                                Name</label>
+                                            <input
+                                                type="text"
+                                                id="firstName"
+                                                value={newFirstName}
+                                                onChange={(e) => setNewFirstName(e.target.value)}
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-[#980000] focus:border-[#980000] sm:text-sm"
+                                                required
+                                            />
+                                        </div>
+                                        <div className="mb-4">
+                                            <label htmlFor="lastName"
+                                                   className="block text-gray-700 text-sm font-bold mb-2">Last
+                                                Name</label>
+                                            <input
+                                                type="text"
+                                                id="lastName"
+                                                value={newLastName}
+                                                onChange={(e) => setNewLastName(e.target.value)}
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-[#980000] focus:border-[#980000] sm:text-sm"
+                                                required
+                                            />
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <button
+                                                type="submit"
+                                                className="bg-[#980000] text-white py-2 px-4 rounded-full shadow-md hover:bg-red-800 transition-colors duration-200"
+                                                disabled={actionLoading}
+                                            >
+                                                {actionLoading ? "Updating..." : "Update Profile"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsEditing(false)}
+                                                className="text-[#980000] py-2 px-4 rounded-full border border-[#980000] shadow-md hover:bg-[#980000] hover:text-white transition-colors duration-200"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        ) : (
+                            <button
+                                onClick={() => setIsEditing(true)}
+                                className="bg-[#980000] text-white py-2 px-4 rounded-full shadow-md hover:bg-red-800 transition-colors duration-200"
+                            >
+                                Edit Profile
+                            </button>
+                        )}
+
+                        <div className="mt-24">
+                            <h4 className="text-xl mt-4 mb-1">Notifications</h4>
+                            <h6 className="text-sm mb-4">Enable the below checkbox to get notified for every new comic
+                                book
+                                added to ComicVerse.</h6>
+                            {Object.entries(subscriptions).map(([category, isSubscribed]) => (
+                                <div key={category} className="flex items-center mb-4 ml-6">
+                                    <span className="mr-2 text-sm capitalize">{category}</span>
+                                    <Switch
+                                        checked={isSubscribed}
+                                        onChange={() => handleSwitchChange(category)}
+                                        onColor="#980000"
+                                        offColor="#d1d5db"
+                                        handleDiameter={20}
+                                        uncheckedIcon={false}
+                                        checkedIcon={false}
+                                        className="react-switch"
+                                    />
+                                    {actionLoading && <ClipLoader size={20} color={"#3b82f6"} loading={actionLoading}/>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    <p className="text-center text-xl">No profile data available</p>
+                )}
+
+
+            </div>
+        </div>);
 };
 
 export default Profile;

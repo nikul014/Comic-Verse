@@ -496,155 +496,160 @@ Resources:
           BUCKET_NAME: !Ref ComicS3Bucket
       Code:
         ZipFile: |
-          const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
-          const { marshall } = require('@aws-sdk/util-dynamodb');
-          const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
-          const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
-          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-          const crypto = require('crypto');
-          
-          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-          const sqs = new SQSClient({ region: process.env.AWS_REGION });
-          const sns = new SNSClient({ region: process.env.AWS_REGION });
-          const s3 = new S3Client({ region: process.env.AWS_REGION });
-          
-          exports.handler = async (event) => {
-              const response = {
-                  statusCode: 200,
-                  headers: {
-                      "Access-Control-Allow-Origin": "*",
-                      "Access-Control-Allow-Headers": "Content-Type",
-                      "Access-Control-Allow-Methods": "*"
-                  }
-              };
-          
-              try {
+                 const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+                  const { marshall } = require('@aws-sdk/util-dynamodb');
+                  const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+                  const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+                  const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+                  const crypto = require('crypto');
+                
+                const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+                const sqs = new SQSClient({ region: process.env.AWS_REGION });
+                const sns = new SNSClient({ region: process.env.AWS_REGION });
+                const s3 = new S3Client({ region: process.env.AWS_REGION });
+                  
+                  exports.handler = async (event) => {
+                  const response = {
+                statusCode: 200,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                }
+                };
+                  
+                  try {
                   const eventBody = JSON.parse(event.body);
-          
+                  
                   // Check if comic with the same ID exists
                   const existingComicParams = {
-                      TableName: process.env.COMIC_TABLE_NAME,
-                      Key: {
-                          'id': { S: eventBody.id }
-                      }
-                  };
-          
+                TableName: process.env.COMIC_TABLE_NAME,
+                Key: {
+                  'id': { S: eventBody.id }
+                }
+                };
+                  
                   const existingComic = await db.send(new GetItemCommand(existingComicParams));
-          
+                  
                   if (existingComic.Item) {
-                      return {
-                          statusCode: 400,
-                          headers: {
-                              "Access-Control-Allow-Origin": "*",
-                              "Access-Control-Allow-Headers": "Content-Type",
-                              "Access-Control-Allow-Methods": "*"
-                          },
-                          body: JSON.stringify({ message: 'Comic with this ID already exists' }),
-                      };
-                  }
-          
+                  return {
+                statusCode: 400,
+                headers: {
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "*"
+                },
+                body: JSON.stringify({ message: 'Comic with this ID already exists' }),
+                };
+                }
+                  
                   // Prepare new comic item
                   let pdfUrl = null;
                   if (eventBody.pdfFile) {
-                      const pdfData = Buffer.from(eventBody.pdfFile, 'base64');
-                      const pdfKey = `comics/${eventBody.id}.pdf`;
-          
-                      const uploadParams = {
-                          Bucket: process.env.BUCKET_NAME,
-                          Key: pdfKey,
-                          Body: pdfData,
-                          ContentType: 'application/pdf'
-                      };
-          
-                      await s3.send(new PutObjectCommand(uploadParams));
-                      pdfUrl = `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}`;
-                  }
-          
+                  const pdfData = Buffer.from(eventBody.pdfFile, 'base64');
+                  const pdfKey = `comics/${eventBody.id}.pdf`;
+                  
+                  const uploadParams = {
+                Bucket: process.env.BUCKET_NAME,
+                Key: pdfKey,
+                Body: pdfData,
+                ContentType: 'application/pdf'
+                };
+                  
+                  await s3.send(new PutObjectCommand(uploadParams));
+                  pdfUrl = `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}`;
+                }
+                  
                   const newComicParams = {
-                      TableName: process.env.COMIC_TABLE_NAME,
-                      Item: marshall({
-                          'id': eventBody.id,
-                          'name': eventBody.name,
-                          'author': eventBody.author,
-                          'category': eventBody.category,
-                          'comicText': eventBody.comicText || null,
-                          'createdAt': new Date().toISOString(),
-                          'updatedAt': new Date().toISOString(),
-                          'image': eventBody.image,
-                          'description': eventBody.description,
-                          'pdfUrl': pdfUrl
-                      })
-                  };
-          
+                TableName: process.env.COMIC_TABLE_NAME,
+                Item: marshall({
+                  'id': eventBody.id,
+                  'name': eventBody.name,
+                  'author': eventBody.author,
+                  'category': eventBody.category,
+                  'comicText': eventBody.comicText || null,
+                  'createdAt': new Date().toISOString(),
+                  'updatedAt': new Date().toISOString(),
+                  'image': eventBody.image,
+                  'description': eventBody.description,
+                  'pdfUrl': pdfUrl
+                })
+                };
+                  
                   await db.send(new PutItemCommand(newComicParams));
-          
+                  
                   response.body = JSON.stringify({
-                      message: "Comic successfully created.",
-                      comicId: eventBody.id,
-                      name: eventBody.name,
-                      author: eventBody.author
-                  });
-          
+                message: "Comic successfully created.",
+                comicId: eventBody.id,
+                name: eventBody.name,
+                author: eventBody.author
+                });
+                  
                   // Publish to SNS topic based on category
                   let topicArn;
                   switch (eventBody.category) {
-                      case 'Superhero':
-                          topicArn = process.env.SuperheroTopicArn;
-                          break;
-                      case 'Fantasy':
-                          topicArn = process.env.FantasyTopicArn;
-                          break;
-                      case 'Sci-Fi':
-                          topicArn = process.env.SciFiTopicArn;
-                          break;
-                      case 'Mystery':
-                          topicArn = process.env.MysteryTopicArn;
-                          break;
-                      default:
-                          throw new Error(`Unsupported category: ${eventBody.category}`);
-                  }
-          
+                case 'Superhero':
+                  topicArn = process.env.SuperheroTopicArn;
+                  break;
+                case 'Fantasy':
+                  topicArn = process.env.FantasyTopicArn;
+                  break;
+                case 'Sci-Fi':
+                  topicArn = process.env.SciFiTopicArn;
+                  break;
+                case 'Mystery':
+                  topicArn = process.env.MysteryTopicArn;
+                  break;
+                default:
+                  throw new Error(`Unsupported category: ${eventBody.category}`);
+                }
+                  
                   // Remove pdfFile from the eventBody
                   const snsMessageBody = { ...eventBody };
                   delete snsMessageBody.pdfFile;
                   delete snsMessageBody.comicText;
-                            
+                  
                   const snsParams = {
-                      TopicArn: topicArn,
-                      Message: JSON.stringify(snsMessageBody)
-                  };
-          
+                TopicArn: topicArn,
+                Message: JSON.stringify(snsMessageBody)
+                };
+                  
                   await sns.send(new PublishCommand(snsParams));
-          
+                  
                   // Send message to SQS queue (optional)
                   if (process.env.SQS_QUEUE_NAME && pdfUrl ==null ) {
-                      const sqsParams = {
-                          QueueUrl: process.env.SQS_QUEUE_NAME,
-                          MessageBody: JSON.stringify(snsMessageBody)
-                      };
-          
-                      await sqs.send(new SendMessageCommand(sqsParams));
-                  }
-          
-              } catch (e) {
+                  
+                  const sqsMessageBody = { ...eventBody };
+                  delete sqsMessageBody.pdfFile;
+                  
+                  const sqsParams = {
+                QueueUrl: process.env.SQS_QUEUE_NAME,
+                MessageBody: JSON.stringify(sqsMessageBody)
+                };
+                  
+                  await sqs.send(new SendMessageCommand(sqsParams));
+                }
+                
+                } catch (e) {
                   console.error(e);
                   response.statusCode = 500;
                   response.body = JSON.stringify({
-                      message: "Failed to create comic.",
-                      errorMsg: e.message,
-                      errorStack: e.stack,
-                  });
-              }
-          
-              return response;
-          };
-
-
-  
+                message: "Failed to create comic.",
+                errorMsg: e.message,
+                errorStack: e.stack,
+                });
+                }
+                  
+                  return response;
+                };
 
 
 
-  # Comic Creation Gateway resource
+
+
+
+
+# Comic Creation Gateway resource
   ApiGatewayResourceComicCreation:
     Type: AWS::ApiGateway::Resource
     Properties:

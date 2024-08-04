@@ -20,6 +20,8 @@ exports.handler = async (event) => {
         console.log(`Comic with ID ${comicId} already has a PDF URL defined: ${pdfUrl}`);
         continue; // Move to the next record
       }
+      console.log(`Comic with ID ${comicId} already has a PDF URL defined: ${pdfUrl}`);
+      console.log(`Comic with ID ${comicText}`);
 
       // Create a new PDF document
       const doc = new PDFDocument();
