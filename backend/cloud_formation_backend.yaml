@@ -12,7 +12,22 @@ Parameters:
   Region:
     Type: String
     Default: "us-east-1"
-
+  VpcCIDR:
+    Type: String
+    Default: "10.0.0.0/16"
+    Description: CIDR block for the VPC
+  PublicSubnetCIDR:
+    Type: String
+    Default: "10.0.1.0/24"
+    Description: CIDR block for the public subnet
+  PrivateSubnetCIDR:
+    Type: String
+    Default: "10.0.2.0/24"
+    Description: CIDR block for the private subnet
+  AvailabilityZone:
+    Type: String
+    Default: "a"
+    Description: Availability Zone for the subnets
 
 Resources:
   UserTable:
@@ -42,6 +57,26 @@ Resources:
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
+
+
+  UserSubscriptionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: user_subscription
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: subscription_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+        - AttributeName: subscription_name
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
 
   ComicProcessingQueue:
     Type: AWS::SQS::Queue
@@ -642,6 +677,7 @@ Resources:
                   
                   return response;
                 };
+
 
 
 
@@ -1306,13 +1342,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
-
-
-
-
-
-
-
   UploadFileToS3Function:
     Type: AWS::Lambda::Function
     Properties:
@@ -1369,6 +1398,7 @@ Resources:
 
 
 
+
   ApiGatewayResourceUpload:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -1415,6 +1445,408 @@ Resources:
       FunctionName: !GetAtt UploadFileToS3Function.Arn
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+
+
+
+
+
+
+#Comic processing
+
+  ComicProcessingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      FunctionName: ComicProcessingFunction
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+          BUCKET_NAME: !Ref ComicS3Bucket
+      Code:
+        S3Bucket: "comic-lambda"
+        S3Key: "ComicProcessingFunction.zip"
+
+  ComicProcessingFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt ComicProcessingQueue.Arn
+
+  ComicProcessingFunctionSQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      BatchSize: 1  # Adjust batch size as per your requirement
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#  Edit profile
+  # Edit Profile Lambda function
+  EditProfileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x  # Adjust runtime version as needed
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+          USER_TABLE_NAME: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
+          const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
+  
+          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+  
+          exports.handler = async (event) => {
+            const response = {
+              statusCode: 200,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Allow-Methods": "*"
+              }
+            };
+  
+            try {
+              const { email, firstname, lastname, profilepicture } = JSON.parse(event.body);
+  
+              const params = {
+                TableName: process.env.USER_TABLE_NAME,
+                Key: marshall({ email }),
+                UpdateExpression: "SET #fn = :fn, #ln = :ln, #pp = :pp",
+                ExpressionAttributeNames: {
+                  "#fn": "firstname",
+                  "#ln": "lastname",
+                  "#pp": "profilepicture"
+                },
+                ExpressionAttributeValues: marshall({
+                  ":fn": firstname || null,
+                  ":ln": lastname || null,
+                  ":pp": profilepicture || null
+                }),
+                ReturnValues: "UPDATED_NEW"
+              };
+  
+              const data = await db.send(new UpdateItemCommand(params));
+              const updatedUser = unmarshall(data.Attributes);
+  
+              response.body = JSON.stringify({
+                message: "Successfully updated the profile.",
+                data: updatedUser,
+              });
+            } catch (e) {
+              console.error(e);
+              response.statusCode = 500;
+              response.body = JSON.stringify({
+                message: "Failed to update the profile.",
+                errorMsg: e.message,
+                errorStack: e.stack,
+              });
+            }
+            return response;
+          };
+
+  # Edit Profile Gateway resource
+  ApiGatewayResourceEditProfile:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: edit-profile
+
+  # Edit Profile Method
+  ApiGatewayMethodEditProfile:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceEditProfile
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceEditProfile
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${EditProfileFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Edit Profile Lambda Permission
+  EditProfileFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt EditProfileFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  #EC2 configuration
+  # VPC
+  ComicVerseVPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-vpc-${Stage}"
+
+  # Internet Gateway
+  ComicVerseInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-internet-gateway-${Stage}"
+
+  # Attach Internet Gateway to VPC
+  ComicVerseVPCGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref ComicVerseVPC
+      InternetGatewayId: !Ref ComicVerseInternetGateway
+
+  # Public Subnet
+  ComicVersePublicSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref ComicVerseVPC
+      CidrBlock: !Ref PublicSubnetCIDR
+      AvailabilityZone: !Sub "${AWS::Region}${AvailabilityZone}"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-public-subnet-${Stage}"
+
+  # Private Subnet
+  ComicVersePrivateSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref ComicVerseVPC
+      CidrBlock: !Ref PrivateSubnetCIDR
+      AvailabilityZone: !Sub "${AWS::Region}${AvailabilityZone}"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-private-subnet-${Stage}"
+
+  # Route Table for Public Subnet
+  ComicVersePublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref ComicVerseVPC
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-public-route-table-${Stage}"
+
+  # Route to Internet Gateway
+  ComicVersePublicRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: ComicVerseVPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref ComicVersePublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref ComicVerseInternetGateway
+
+  # Associate Public Subnet with Route Table
+  ComicVersePublicSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref ComicVersePublicSubnet
+      RouteTableId: !Ref ComicVersePublicRouteTable
+
+  # Security Group
+  ComicVerseEC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Security group for ComicVerse EC2 instance"
+      VpcId: !Ref ComicVerseVPC
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 80
+          IpProtocol: "tcp"
+          ToPort: 80
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 22
+          IpProtocol: "tcp"
+          ToPort: 22
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 3000
+          IpProtocol: "tcp"
+          ToPort: 3000
+      SecurityGroupEgress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "-1"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-ec2-sg-${Stage}"
+
+  # EC2 Instance
+  ComicVerseEC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: "ami-0cd59ecaf368e5ccf" # ubuntu server
+      InstanceType: "t3.small"
+      KeyName: "comic-verse"
+      AvailabilityZone: !Sub "${AWS::Region}${AvailabilityZone}"
+      Tenancy: "default"
+      SubnetId: !Ref ComicVersePublicSubnet
+      EbsOptimized: true
+      SecurityGroupIds:
+        - !Ref ComicVerseEC2SecurityGroup
+      SourceDestCheck: true
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdf"
+          Ebs:
+            Encrypted: false
+            VolumeSize: 8
+            SnapshotId: "snap-0d4808a4a367518ba"
+            VolumeType: "gp2"
+            DeleteOnTermination: true
+      Tags:
+        - Key: "Name"
+          Value: !Sub "comicverse-ec2-${Stage}"
+      HibernationOptions:
+        Configured: false
+      CpuOptions:
+        CoreCount: 1
+        ThreadsPerCore: 2
+      EnclaveOptions:
+        Enabled: false
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt-get update -y
+          sudo apt install npm -y
+          sudo npm install -g npm@latest
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt install -y nodejs
+          sudo apt install nginx -y
+          sudo mkdir /var/www/html/comic-verse
+          echo 'server {
+            listen 80;
+            listen [::]:80;
+            root /var/www/html/comic-verse/build;
+
+            #react app
+            location / {
+              try_files $uri /index.html;
+            }
+          }' | sudo tee /etc/nginx/conf.d/react.conf >/dev/null
+          cd /home/ubuntu
+          mkdir my-app
+          cd my-app
+          sudo git clone https://github.com/nikul014/cloud_term_nikul.git
+          cd cloud_term_nikul
+          cd comic-book-app
+          # Create .env file with the API Gateway endpoint inside React app directory
+          echo "Creating .env file with API Gateway endpoint inside React app"
+          BASE_URL="https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+          echo "REACT_APP_BASE_URL=${BASE_URL}" | sudo tee .env >/dev/null  
+          sudo npm install
+          sudo npm run build
+          sudo cp -R build/ /var/www/html/comic-verse/
+          echo '
+          user www-data;
+          worker_processes auto;
+          pid /run/nginx.pid;
+          include /etc/nginx/modules-enabled/*.conf;
+
+          events {
+            worker_connections 768;
+          }
+
+          http {
+            sendfile on;
+            tcp_nopush on;
+            tcp_nodelay on;
+            keepalive_timeout 65;
+            types_hash_max_size 2048;
+
+            include /etc/nginx/mime.types;
+            default_type application/octet-stream;
+
+            ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; # Dropping SSLv3, ref: POODLE
+            ssl_prefer_server_ciphers on;
+
+            access_log /var/log/nginx/access.log;
+            error_log /var/log/nginx/error.log;
+
+            gzip on;
+
+            include /etc/nginx/conf.d/*.conf;
+          }' | sudo tee /etc/nginx/nginx.conf >/dev/null
+          sudo nginx -t && sudo systemctl reload nginx
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   ApiGatewayMethodOptionsRoot:
     Type: "AWS::ApiGateway::Method"
@@ -1466,113 +1898,6 @@ Resources:
           - "REGIONAL"
 
 
-
-  ComicProcessingFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Handler: "index.handler"
-      Role: !Sub "${RoleARN}"
-      Runtime: nodejs20.x
-      FunctionName: ComicProcessingFunction
-      MemorySize: 128
-      Timeout: 300
-      Environment:
-        Variables:
-          COMIC_TABLE_NAME: !Ref ComicTable
-          BUCKET_NAME: !Ref ComicS3Bucket
-      Code:
-        ZipFile: |
-          const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
-          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-          const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
-          const PDFDocument = require('pdfkit');
-          const { Readable } = require('stream');
-          const { unmarshall } = require('@aws-sdk/util-dynamodb');
-
-          const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-          const s3 = new S3Client({ region: process.env.AWS_REGION });
-          const polly = new PollyClient({ region: process.env.AWS_REGION });
-
-          exports.handler = async (event) => {
-            for (const record of event.Records) {
-              const { body } = record;
-              const comic = JSON.parse(body);
-              const comicId = comic.id.S;
-              const comicText = comic.comicText.S;
-
-              // Generate PDF from comic text
-              const pdfDoc = new PDFDocument();
-              const pdfStream = new Readable();
-              pdfStream._read = () => {}; // No-op
-              pdfDoc.pipe(pdfStream);
-              pdfDoc.text(comicText);
-              pdfDoc.end();
-
-              const pdfBuffer = await new Promise((resolve, reject) => {
-                const buffers = [];
-                pdfStream.on('data', buffers.push.bind(buffers));
-                pdfStream.on('end', () => resolve(Buffer.concat(buffers)));
-                pdfStream.on('error', reject);
-              });
-
-              const pdfKey = `comics/${comicId}.pdf`;
-              await s3.send(new PutObjectCommand({
-                Bucket: process.env.S3_BUCKET_NAME,
-                Key: pdfKey,
-                Body: pdfBuffer,
-                ContentType: 'application/pdf'
-              }));
-
-              // Generate MP3 from comic text
-              const pollyParams = {
-                OutputFormat: 'mp3',
-                Text: comicText,
-                VoiceId: 'Joanna'
-              };
-              const pollyCommand = new SynthesizeSpeechCommand(pollyParams);
-              const pollyResponse = await polly.send(pollyCommand);
-
-              const mp3Key = `comics/${comicId}.mp3`;
-              await s3.send(new PutObjectCommand({
-                Bucket: process.env.S3_BUCKET_NAME,
-                Key: mp3Key,
-                Body: pollyResponse.AudioStream,
-                ContentType: 'audio/mpeg'
-              }));
-
-              // Update DynamoDB with S3 URLs
-              const updateParams = {
-                TableName: process.env.COMIC_TABLE_NAME,
-                Key: { id: { S: comicId } },
-                UpdateExpression: "SET pdfUrl = :pdfUrl, mp3Url = :mp3Url",
-                ExpressionAttributeValues: {
-                  ":pdfUrl": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${pdfKey}` },
-                  ":mp3Url": { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${mp3Key}` }
-                }
-              };
-              await db.send(new UpdateItemCommand(updateParams));
-            }
-          };
-
-
-
-
-
-  ComicProcessingFunctionInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt ComicProcessingFunction.Arn
-      Principal: sqs.amazonaws.com
-      SourceArn: !GetAtt ComicProcessingQueue.Arn
-
-  ComicProcessingFunctionSQSEventSourceMapping:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
-      FunctionName: !GetAtt ComicProcessingFunction.Arn
-      BatchSize: 1  # Adjust batch size as per your requirement
-
   # API Gateway Deployment to stage.
   ApiGatewayDeployment:
     Type: AWS::ApiGateway::Deployment
@@ -1586,6 +1911,8 @@ Resources:
       - ApiGatewayMethodSubscribe
       - ApiGatewayMethodUpload
       - ApiGatewayMethodUpdateUserProfile
+
+      - ApiGatewayMethodEditProfile
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref Stage

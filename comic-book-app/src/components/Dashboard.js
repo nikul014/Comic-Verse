@@ -11,7 +11,7 @@ const Dashboard = () => {
     useEffect(() => {
         const fetchComics = async () => {
             try {
-                const response = await axios.get('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/comics?lastEvaluatedKey=');
+                const response = await axios.get(process.env.REACT_APP_BASE_URL+'/comics?lastEvaluatedKey=');
                 setComics(response.data.data || []);
                 setLoading(false);
             } catch (err) {
@@ -68,7 +68,7 @@ const Dashboard = () => {
 
 const handleLike = async (comicId) => {
     try {
-        const response = await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/like-comic', { comicId });
+        const response = await axios.post(process.env.REACT_APP_BASE_URL+'/like-comic', { comicId });
         console.log('Liking comic:', response);
         // Optionally, refresh the list or update the like count in the UI
     } catch (err) {

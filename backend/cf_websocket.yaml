@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  RoleARN:
+    Type: String
+    Default: "arn:aws:iam::930593698544:role/LabRole"
+    Description: ARN of the existing IAM Role to be used by the Lambda functions
+
+  Stage:
+    Type: String
+    Default: dev-1
+    Description: Deployment stage (e.g., dev-1, prod)
+
+Resources:
+  # DynamoDB Table
+  WebSocketConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: WebSocketConnections
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: chatId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ChatIdIndex
+          KeySchema:
+            - AttributeName: chatId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+
+  # WebSocket API Gateway
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: WebSocketApi
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+
+  # Lambda Function for $connect
+  ConnectHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !Ref RoleARN
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+
+          exports.handler = async (event) => {
+              const { connectionId } = event.requestContext;
+              const chatId = event.queryStringParameters.chatId;
+
+              const params = {
+                  TableName: 'WebSocketConnections',
+                  Item: {
+                      chatId: chatId,
+                      connectionId: connectionId,
+                  },
+              };
+
+              await dynamo.put(params).promise();
+
+              return { statusCode: 200 };
+          };
+
+  # Lambda Function for $disconnect
+  DisconnectHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !Ref RoleARN
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+
+          exports.handler = async (event) => {
+              const { connectionId } = event.requestContext;
+
+              const params = {
+                  TableName: 'WebSocketConnections',
+                  Key: {
+                      connectionId: connectionId,
+                  },
+              };
+
+              await dynamo.delete(params).promise();
+
+              return { statusCode: 200 };
+          };
+
+  # Lambda Function for $default
+  DefaultHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !Ref RoleARN
+      Environment:
+        Variables:
+          WEBSOCKET_API_ENDPOINT: !Sub wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+          const apigwManagementApi = new AWS.ApiGatewayManagementApi({ endpoint: process.env.WEBSOCKET_API_ENDPOINT });
+
+          exports.handler = async (event) => {
+              const { chatId, message } = JSON.parse(event.body);
+
+              try {
+                  const params = {
+                      TableName: 'WebSocketConnections',
+                      IndexName: 'ChatIdIndex',
+                      KeyConditionExpression: 'chatId = :chatId',
+                      ExpressionAttributeValues: {
+                          ':chatId': chatId,
+                      },
+                  };
+
+                  const connectionData = await dynamo.query(params).promise();
+
+                  const postCalls = connectionData.Items.map(async ({ connectionId }) => {
+                      const sendParams = {
+                          ConnectionId: connectionId,
+                          Data: JSON.stringify({ message }),
+                      };
+
+                      try {
+                          await apigwManagementApi.postToConnection(sendParams).promise();
+                      } catch (e) {
+                          if (e.statusCode === 410) {
+                              console.log(`Found stale connection, deleting ${connectionId}`);
+                              await dynamo.delete({
+                                  TableName: 'WebSocketConnections',
+                                  Key: { connectionId },
+                              }).promise();
+                          } else {
+                              throw e;
+                          }
+                      }
+                  });
+
+                  await Promise.all(postCalls);
+
+                  return { statusCode: 200, body: 'Message sent' };
+              } catch (err) {
+                  return { statusCode: 500, body: err.stack };
+              }
+          };
+
+  # Create Integrations for Lambda Functions
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectHandler.Arn}/invocations
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectHandler.Arn}/invocations
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DefaultHandler.Arn}/invocations
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${ConnectIntegration}
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${DisconnectIntegration}
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      Target: !Sub integrations/${DefaultIntegration}
+
+  WebSocketDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    Properties:
+      ApiId: !Ref WebSocketApi
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - DefaultRoute
+
+  ConnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ConnectHandler.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Stage}/$connect
+
+  DisconnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DisconnectHandler.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Stage}/$disconnect
+
+  DefaultLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt DefaultHandler.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${Stage}/$default
+
+Outputs:
+  WebSocketApiUrl:
+    Description: "WebSocket API URL"
+    Value: !Sub wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+    Export:
+      Name: WebSocketApiUrl

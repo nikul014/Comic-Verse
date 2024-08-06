@@ -18,7 +18,7 @@ const Login = () => {
         e.preventDefault();
         setLoading(true);
         try {
-            const response = await axios.get(`https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/login-user?email=${formData.email}&password=${formData.password}`);
+            const response = await axios.get( process.env.REACT_APP_BASE_URL+`/login-user?email=${formData.email}&password=${formData.password}`);
             console.log(response.data);
             // Store token or user info in localStorage or context
             navigate('/');

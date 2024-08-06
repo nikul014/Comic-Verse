@@ -41,7 +41,7 @@ const Profile = () => {
         const fetchProfile = async () => {
             setActionLoading(true); // Start action loading
             try {
-                const response = await axios.get('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/user-profile', {
+                const response = await axios.get(process.env.REACT_APP_BASE_URL+'/user-profile', {
                     params: {email}
                 });
 
@@ -77,7 +77,7 @@ const Profile = () => {
         setActionLoading(true); // Start action loading
         const action = isSubscribed ? "add" : "remove";
         try {
-            await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/subscribe', {
+            await axios.post(process.env.REACT_APP_BASE_URL+'/subscribe', {
                 email,
                 category,
                 action
@@ -103,7 +103,7 @@ const Profile = () => {
     const updateProfilePicture = async (firstname, lastname, newProfilePicture) => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/editProfile', {
+            await axios.post(process.env.REACT_APP_BASE_URL+'/editProfile', {
                 email,
                 firstname,
                 lastname,
@@ -128,7 +128,7 @@ const Profile = () => {
     const handleEditProfile = async () => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/editProfile', {
+            await axios.post(process.env.REACT_APP_BASE_URL+'/editProfile', {
                 email,
                 firstname: newFirstName,
                 lastname: newLastName,

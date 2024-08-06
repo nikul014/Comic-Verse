@@ -53,7 +53,7 @@ const CreateComic = () => {
                 payload.comicText = comicText;
             }
 
-            const response = await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/create-comic', payload);
+            const response = await axios.post(process.env.REACT_APP_BASE_URL+'/create-comic', payload);
 
             toast.success('Comic created successfully!');
             console.log(response.data);

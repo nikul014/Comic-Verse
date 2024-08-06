@@ -39,7 +39,7 @@ const SignUp = () => {
         e.preventDefault();
         setLoading(true);
         try {
-            const response = await axios.post('https://i1attpz71h.execute-api.us-east-1.amazonaws.com/term3/signup-user', formData);
+            const response = await axios.post(process.env.REACT_APP_BASE_URL+'/signup-user', formData);
             console.log(response.data);
             navigate('/login');
             toast.success('Sign up successful! Please log in.', {
