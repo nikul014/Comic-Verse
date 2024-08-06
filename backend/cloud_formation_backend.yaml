@@ -33,7 +33,7 @@ Resources:
   UserTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "UserTable"
+      TableName: !Sub "UserTable-${Stage}"
       AttributeDefinitions:
         - AttributeName: 'email'
           AttributeType: 'S'
@@ -47,7 +47,7 @@ Resources:
   ComicTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "ComicTable"
+      TableName: !Sub "ComicTable-${Stage}"
       AttributeDefinitions:
         - AttributeName: 'id'
           AttributeType: 'S'
@@ -62,7 +62,7 @@ Resources:
   UserSubscriptionTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: user_subscription
+      TableName:  !Sub "user_subscription-${Stage}"
       AttributeDefinitions:
         - AttributeName: email
           AttributeType: S
@@ -81,13 +81,13 @@ Resources:
   ComicProcessingQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub "ComicProcessingQueue"
-      VisibilityTimeout: 70  # Set the visibility timeout slightly higher than Lambda function timeout
+      QueueName: !Sub "ComicProcessingQueue-${Stage}"
+      VisibilityTimeout: 300   # Set the visibility timeout slightly higher than Lambda function timeout
 
   ComicS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "comic-bucket-term-project"
+      BucketName: !Sub "comic-bucket-term-project-${Stage}"
       AccessControl: Private
 
   SuperheroTopic:
@@ -532,152 +532,152 @@ Resources:
       Code:
         ZipFile: |
                  const { DynamoDBClient, PutItemCommand, GetItemCommand } = require('@aws-sdk/client-dynamodb');
-                  const { marshall } = require('@aws-sdk/util-dynamodb');
-                  const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
-                  const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
-                  const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-                  const crypto = require('crypto');
-                
-                const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-                const sqs = new SQSClient({ region: process.env.AWS_REGION });
-                const sns = new SNSClient({ region: process.env.AWS_REGION });
-                const s3 = new S3Client({ region: process.env.AWS_REGION });
-                  
-                  exports.handler = async (event) => {
-                  const response = {
-                statusCode: 200,
-                headers: {
-                  "Access-Control-Allow-Origin": "*",
-                  "Access-Control-Allow-Headers": "Content-Type",
-                  "Access-Control-Allow-Methods": "*"
-                }
-                };
-                  
-                  try {
-                  const eventBody = JSON.parse(event.body);
-                  
-                  // Check if comic with the same ID exists
-                  const existingComicParams = {
-                TableName: process.env.COMIC_TABLE_NAME,
-                Key: {
-                  'id': { S: eventBody.id }
-                }
-                };
-                  
-                  const existingComic = await db.send(new GetItemCommand(existingComicParams));
-                  
-                  if (existingComic.Item) {
-                  return {
-                statusCode: 400,
-                headers: {
-                  "Access-Control-Allow-Origin": "*",
-                  "Access-Control-Allow-Headers": "Content-Type",
-                  "Access-Control-Allow-Methods": "*"
-                },
-                body: JSON.stringify({ message: 'Comic with this ID already exists' }),
-                };
-                }
-                  
-                  // Prepare new comic item
-                  let pdfUrl = null;
-                  if (eventBody.pdfFile) {
-                  const pdfData = Buffer.from(eventBody.pdfFile, 'base64');
-                  const pdfKey = `comics/${eventBody.id}.pdf`;
-                  
-                  const uploadParams = {
-                Bucket: process.env.BUCKET_NAME,
-                Key: pdfKey,
-                Body: pdfData,
-                ContentType: 'application/pdf'
-                };
-                  
-                  await s3.send(new PutObjectCommand(uploadParams));
-                  pdfUrl = `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}`;
-                }
-                  
-                  const newComicParams = {
-                TableName: process.env.COMIC_TABLE_NAME,
-                Item: marshall({
-                  'id': eventBody.id,
-                  'name': eventBody.name,
-                  'author': eventBody.author,
-                  'category': eventBody.category,
-                  'comicText': eventBody.comicText || null,
-                  'createdAt': new Date().toISOString(),
-                  'updatedAt': new Date().toISOString(),
-                  'image': eventBody.image,
-                  'description': eventBody.description,
-                  'pdfUrl': pdfUrl
-                })
-                };
-                  
-                  await db.send(new PutItemCommand(newComicParams));
-                  
-                  response.body = JSON.stringify({
-                message: "Comic successfully created.",
-                comicId: eventBody.id,
-                name: eventBody.name,
-                author: eventBody.author
-                });
-                  
-                  // Publish to SNS topic based on category
-                  let topicArn;
-                  switch (eventBody.category) {
-                case 'Superhero':
-                  topicArn = process.env.SuperheroTopicArn;
-                  break;
-                case 'Fantasy':
-                  topicArn = process.env.FantasyTopicArn;
-                  break;
-                case 'Sci-Fi':
-                  topicArn = process.env.SciFiTopicArn;
-                  break;
-                case 'Mystery':
-                  topicArn = process.env.MysteryTopicArn;
-                  break;
-                default:
-                  throw new Error(`Unsupported category: ${eventBody.category}`);
-                }
-                  
-                  // Remove pdfFile from the eventBody
-                  const snsMessageBody = { ...eventBody };
-                  delete snsMessageBody.pdfFile;
-                  delete snsMessageBody.comicText;
-                  
-                  const snsParams = {
-                TopicArn: topicArn,
-                Message: JSON.stringify(snsMessageBody)
-                };
-                  
-                  await sns.send(new PublishCommand(snsParams));
-                  
-                  // Send message to SQS queue (optional)
-                  if (process.env.SQS_QUEUE_NAME && pdfUrl ==null ) {
-                  
-                  const sqsMessageBody = { ...eventBody };
-                  delete sqsMessageBody.pdfFile;
-                  
-                  const sqsParams = {
-                QueueUrl: process.env.SQS_QUEUE_NAME,
-                MessageBody: JSON.stringify(sqsMessageBody)
-                };
-                  
-                  await sqs.send(new SendMessageCommand(sqsParams));
-                }
-                
-                } catch (e) {
-                  console.error(e);
-                  response.statusCode = 500;
-                  response.body = JSON.stringify({
-                message: "Failed to create comic.",
-                errorMsg: e.message,
-                errorStack: e.stack,
-                });
-                }
-                  
-                  return response;
-                };
-
+                          const { marshall } = require('@aws-sdk/util-dynamodb');
+                          const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+                          const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+                          const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+                          const crypto = require('crypto');
+                        
+                        const db = new DynamoDBClient({ region: process.env.AWS_REGION });
+                        const sqs = new SQSClient({ region: process.env.AWS_REGION });
+                        const sns = new SNSClient({ region: process.env.AWS_REGION });
+                        const s3 = new S3Client({ region: process.env.AWS_REGION });
+                          
+                          exports.handler = async (event) => {
+                          const response = {
+                        statusCode: 200,
+                        headers: {
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "Content-Type",
+                          "Access-Control-Allow-Methods": "*"
+                        }
+                        };
+                          
+                          try {
+                          const eventBody = JSON.parse(event.body);
+                          
+                          // Check if comic with the same ID exists
+                          const existingComicParams = {
+                        TableName: process.env.COMIC_TABLE_NAME,
+                        Key: {
+                          'id': { S: eventBody.id }
+                        }
+                        };
+                          
+                          const existingComic = await db.send(new GetItemCommand(existingComicParams));
+                          
+                          if (existingComic.Item) {
+                          return {
+                        statusCode: 400,
+                        headers: {
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "Content-Type",
+                          "Access-Control-Allow-Methods": "*"
+                        },
+                        body: JSON.stringify({ message: 'Comic with this ID already exists' }),
+                        };
+                        }
+                          
+                          // Prepare new comic item
+                          let pdfUrl = null;
+                          if (eventBody.pdfFile) {
+                          const pdfData = Buffer.from(eventBody.pdfFile, 'base64');
+                          const pdfKey = `comics/${eventBody.id}.pdf`;
+                          
+                          const uploadParams = {
+                        Bucket: process.env.BUCKET_NAME,
+                        Key: pdfKey,
+                        Body: pdfData,
+                        ContentType: 'application/pdf'
+                        };
+                          
+                          await s3.send(new PutObjectCommand(uploadParams));
+                          pdfUrl = `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}`;
+                        }
+                          
+                          const newComicParams = {
+                        TableName: process.env.COMIC_TABLE_NAME,
+                        Item: marshall({
+                          'id': eventBody.id,
+                          'name': eventBody.name,
+                          'author': eventBody.author,
+                          'category': eventBody.category,
+                          'comicText': eventBody.comicText || null,
+                          'createdAt': new Date().toISOString(),
+                          'updatedAt': new Date().toISOString(),
+                          'image': eventBody.image,
+                          'description': eventBody.description,
+                          'pdfUrl': pdfUrl
+                        })
+                        };
+                          
+                          await db.send(new PutItemCommand(newComicParams));
+                          
+                          response.body = JSON.stringify({
+                        message: "Comic successfully created.",
+                        comicId: eventBody.id,
+                        name: eventBody.name,
+                        author: eventBody.author
+                        });
+                          
+                          // Publish to SNS topic based on category
+                          let topicArn;
+                          switch (eventBody.category) {
+                        case 'Superhero':
+                          topicArn = process.env.SuperheroTopicArn;
+                          break;
+                        case 'Fantasy':
+                          topicArn = process.env.FantasyTopicArn;
+                          break;
+                        case 'Sci-Fi':
+                          topicArn = process.env.SciFiTopicArn;
+                          break;
+                        case 'Mystery':
+                          topicArn = process.env.MysteryTopicArn;
+                          break;
+                        default:
+                          throw new Error(`Unsupported category: ${eventBody.category}`);
+                        }
+                          
+                          // Remove pdfFile from the eventBody
+                          const snsMessageBody = { ...eventBody };
+                          delete snsMessageBody.pdfFile;
+                          delete snsMessageBody.comicText;
+                          
+                          const snsParams = {
+                        TopicArn: topicArn,
+                        Message: JSON.stringify(snsMessageBody)
+                        };
+                          
+                          await sns.send(new PublishCommand(snsParams));
+                          
+                          // Send message to SQS queue (optional)
+                          if (process.env.SQS_QUEUE_NAME && pdfUrl ==null ) {
+                          
+                          const sqsMessageBody = { ...eventBody };
+                          delete sqsMessageBody.pdfFile;
+                          
+                          const sqsParams = {
+                        QueueUrl: process.env.SQS_QUEUE_NAME,
+                        MessageBody: JSON.stringify(sqsMessageBody)
+                        };
+                          
+                          await sqs.send(new SendMessageCommand(sqsParams));
+                        }
+                        
+                        } catch (e) {
+                          console.error(e);
+                          response.statusCode = 500;
+                          response.body = JSON.stringify({
+                        message: "Failed to create comic.",
+                        errorMsg: e.message,
+                        errorStack: e.stack,
+                        });
+                        }
+                          
+                          return response;
+                        };
+        
 
 
 
@@ -1461,7 +1461,6 @@ Resources:
       Handler: "index.handler"
       Role: !Sub "${RoleARN}"
       Runtime: nodejs20.x
-      FunctionName: ComicProcessingFunction
       MemorySize: 128
       Timeout: 300
       Environment:
@@ -1797,9 +1796,7 @@ Resources:
           cd cloud_term_nikul
           cd comic-book-app
           # Create .env file with the API Gateway endpoint inside React app directory
-          echo "Creating .env file with API Gateway endpoint inside React app"
-          BASE_URL="https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
-          echo "REACT_APP_BASE_URL=${BASE_URL}" | sudo tee .env >/dev/null  
+          echo "REACT_APP_BASE_URL=https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}" | sudo tee .env >/dev/null  
           sudo npm install
           sudo npm run build
           sudo cp -R build/ /var/www/html/comic-verse/

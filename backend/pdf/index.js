@@ -46,7 +46,7 @@ exports.handler = async (event) => {
       // Upload the PDF to S3
       const pdfKey = `comics/${comicId}.pdf`;
       await s3.send(new PutObjectCommand({
-        Bucket: "comic-bucket-term-project",
+        Bucket: process.env.BUCKET_NAME,
         Key: pdfKey,
         Body: pdfBuffer,
         ContentType: 'application/pdf'
@@ -54,11 +54,11 @@ exports.handler = async (event) => {
 
       // Update DynamoDB with S3 URL
       const updateParams = {
-        TableName: "ComicTable",
+        TableName: process.env.COMIC_TABLE_NAME,
         Key: { id: { S: comicId } },
         UpdateExpression: 'SET pdfUrl = :pdfUrl',
         ExpressionAttributeValues: {
-          ':pdfUrl': { S: `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${pdfKey}` },
+          ':pdfUrl': { S: `https://${process.env.BUCKET_NAME}.s3.amazonaws.com/${pdfKey}` },
         }
       };
       await db.send(new UpdateItemCommand(updateParams));
