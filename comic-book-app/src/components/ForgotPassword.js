@@ -3,48 +3,45 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import {  toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import comicImage from "../assets/login.jpg";
-import { useAuth } from '../AuthContext';
+import comicImage from "../assets/login.jpg"; // Change the image path as needed
 
-const Login = () => {
-    const [formData, setFormData] = useState({ email: '', password: '' });
+const ForgotPassword = () => {
+    const [email, setEmail] = useState('');
     const [loading, setLoading] = useState(false);
     const navigate = useNavigate();
-    const { login } = useAuth(); // Use the login function from AuthContext
 
     const handleChange = (e) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+        setEmail(e.target.value);
+    };
+// Function to generate a random 8-digit password
+    const generateRandomPassword = () => {
+        const length = 8;
+        let password = '';
+        for (let i = 0; i < length; i++) {
+            password += Math.floor(Math.random() * 10); // Generate a random digit
+        }
+        return password;
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         try {
-            const response = await axios.get( process.env.REACT_APP_BASE_URL+`/login-user?email=${formData.email}&password=${formData.password}`);
-            console.log(response.data);
-            // const { token, user } = response.data;
-            login(response.data.data, "jwt-token");
-            // Store token or user info in localStorage or context
-            navigate('/');
-            toast.success('Login successful!', {
-                position: "top-right",
-                autoClose: 3000,
-                hideProgressBar: false,
-                closeOnClick: true,
-                pauseOnHover: true,
-                draggable: true,
-                progress: undefined,
+            const newPassword = generateRandomPassword(); // Generate the password
+            const response = await axios.post(process.env.REACT_APP_BASE_URL + '/forgotPassword', {
+                email,
+                newPassword
             });
+            console.log(response.data);
+            toast.success('Password reset instructions have been sent to your email.', {
+                position: "top-right",
+            });
+            navigate('/login');
+
         } catch (error) {
             console.error(error);
-            toast.error('Login failed. Please check your credentials.', {
+            toast.error('Failed to send password reset instructions. Please try again.', {
                 position: "top-right",
-                autoClose: 3000,
-                hideProgressBar: false,
-                closeOnClick: true,
-                pauseOnHover: true,
-                draggable: true,
-                progress: undefined,
             });
         } finally {
             setLoading(false);
@@ -58,12 +55,12 @@ const Login = () => {
                     <div className="w-full md:w-1/2 hidden md:block">
                         <img
                             src={comicImage}
-                            alt="Login Illustration"
+                            alt="Forgot Password Illustration"
                             className="w-full h-full object-cover"
                         />
                     </div>
                     <div className="w-full md:w-1/2 p-8 flex flex-col justify-center">
-                        <h2 className="text-2xl font-bold text-center mb-6">Welcome Back!</h2>
+                        <h2 className="text-2xl font-bold text-center mb-6">Forgot Password?</h2>
                         <form className="p-6" onSubmit={handleSubmit}>
                             <div className="mb-4">
                                 <label htmlFor="email"
@@ -72,22 +69,8 @@ const Login = () => {
                                     type="email"
                                     id="email"
                                     name="email"
-                                    placeholder="Enter your email"
-                                    value={formData.email}
-                                    onChange={handleChange}
-                                    className="w-full px-3 py-2 text-gray-700 border rounded-lg focus:outline-none focus:border-base-100"
-                                    required
-                                />
-                            </div>
-                            <div className="mb-4">
-                                <label htmlFor="password"
-                                       className="block text-gray-700 text-sm font-bold mb-2">Password:</label>
-                                <input
-                                    type="password"
-                                    id="password"
-                                    name="password"
-                                    placeholder="Enter your password"
-                                    value={formData.password}
+                                    placeholder="Enter your email address"
+                                    value={email}
                                     onChange={handleChange}
                                     className="w-full px-3 py-2 text-gray-700 border rounded-lg focus:outline-none focus:border-base-100"
                                     required
@@ -108,10 +91,10 @@ const Login = () => {
                                                 <path className="opacity-75" fill="currentColor"
                                                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                                             </svg>
-                                            Logging in...
+                                            Sending...
                                         </div>
                                     ) : (
-                                        'Login'
+                                        'Send Instructions'
                                     )}
                                 </button>
                             </div>
@@ -119,12 +102,7 @@ const Login = () => {
 
                         <div className="mt-4 text-center">
                             <p className="text-sm text-gray-600">
-                                Don't have an account? <a href="/signup" className="text-blue-600 hover:underline">Sign
-                                Up</a>
-                            </p>
-                            <p className="text-sm text-gray-600 mt-2">
-                                <a href="/forgot-password" className="text-blue-600 hover:underline">Forgot
-                                    Password?</a>
+                                Remembered your password? <a href="/login" className="text-blue-600 hover:underline">Login</a>
                             </p>
                         </div>
                     </div>
@@ -135,4 +113,4 @@ const Login = () => {
     );
 };
 
-export default Login;
+export default ForgotPassword;

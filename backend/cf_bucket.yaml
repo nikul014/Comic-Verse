@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for a publicly accessible S3 bucket
+
+Parameters:
+  Stage:
+    Type: String
+    Default: term1
+
+Resources:
+  ComicS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "comic-bucket-term-project-${Stage}"
+      AccessControl: PublicRead
+
+  ComicS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ComicS3Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "PublicReadGetObject"
+            Effect: "Allow"
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::comic-bucket-term-project-${Stage}/*"
+
+Outputs:
+  BucketName:
+    Value: !Ref ComicS3Bucket
+    Description: Name of the S3 bucket created for the project
+
+#
+#  {
+#    "Version": "2012-10-17",
+#    "Statement": [
+#      {
+#        "Sid": "PublicReadGetObject",
+#        "Effect": "Allow",
+#        "Principal": "*",
+#        "Action": "s3:GetObject",
+#        "Resource": "arn:aws:s3:::comic-bucket-term-project-comic-verse/*"
+#      }
+#    ]
+#  }

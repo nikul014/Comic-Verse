@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { PulseLoader } from 'react-spinners';
-import { toast, ToastContainer } from 'react-toastify';
+import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import comicImage from '../assets/comic-creation.png'; // Optional decorative image
 
@@ -19,6 +20,7 @@ const CreateComic = () => {
     });
     const [submissionType, setSubmissionType] = useState('comicText');
     const [loading, setLoading] = useState(false);
+    const navigate = useNavigate(); // Hook for navigation
 
     useEffect(() => {
         // Generate a new UUID for the comic ID when the component mounts
@@ -53,9 +55,11 @@ const CreateComic = () => {
                 payload.comicText = comicText;
             }
 
-            const response = await axios.post(process.env.REACT_APP_BASE_URL+'/create-comic', payload);
+            const response = await axios.post(process.env.REACT_APP_BASE_URL + '/create-comic', payload);
 
-            toast.success('Comic created successfully!');
+            toast.success('Comic created successfully!', {
+                onClose: () => navigate('/') // Redirect to home after toast closes
+            });
             console.log(response.data);
         } catch (error) {
             toast.error('Error creating comic.');
@@ -208,7 +212,6 @@ const CreateComic = () => {
                     </form>
                 </div>
             </div>
-            <ToastContainer position="bottom-right" />
         </div>
     );
 };

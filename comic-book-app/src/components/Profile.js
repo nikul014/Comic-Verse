@@ -1,13 +1,17 @@
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import ClipLoader from 'react-spinners/ClipLoader'; // For loading spinner
-import {toast} from 'react-toastify';
+import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import {FaEdit} from 'react-icons/fa'; // Import the edit icon from react-icons
+import { FaEdit } from 'react-icons/fa'; // Import the edit icon from react-icons
 import Switch from 'react-switch';
 import comicImage from "../assets/profilebackground.jpg";
+import { useAuth } from '../AuthContext'; // Adjust the import path
 
 const Profile = () => {
+    const { user } = useAuth(); // Assuming useAuth provides a user object
+    const email = user?.email; // Get the email from the user object
+
     const [profile, setProfile] = useState(null);
     const [error, setError] = useState(null);
     const [subscriptions, setSubscriptions] = useState({
@@ -21,8 +25,6 @@ const Profile = () => {
     const [newFirstName, setNewFirstName] = useState('');
     const [newLastName, setNewLastName] = useState('');
     const [actionLoading, setActionLoading] = useState(false); // Loader state for actions
-
-    const email = "nikulpokukadiya1998@gmail.com";
 
     const maleAvatarUrls = [
         83, 87, 62, 97, 64, 85, 51, 68, 95, 81, 69, 72, 55, 74, 56, 58,
@@ -38,11 +40,17 @@ const Profile = () => {
     ].map(id => `https://avatar.iran.liara.run/public/${id}`);
 
     useEffect(() => {
+        if (!email) {
+            // Handle the case where email is not available
+            setError('No user email available.');
+            return;
+        }
+
         const fetchProfile = async () => {
             setActionLoading(true); // Start action loading
             try {
-                const response = await axios.get(process.env.REACT_APP_BASE_URL+'/user-profile', {
-                    params: {email}
+                const response = await axios.get(`${process.env.REACT_APP_BASE_URL}/user-profile`, {
+                    params: { email }
                 });
 
                 // Parse the comma-separated category data
@@ -52,7 +60,7 @@ const Profile = () => {
 
                 // Update subscriptions state based on categories
                 setSubscriptions(prevState => {
-                    const updatedSubscriptions = {...prevState};
+                    const updatedSubscriptions = { ...prevState };
                     categories.forEach(category => {
                         const formattedCategory = category.charAt(0).toUpperCase() + category.slice(1); // Capitalize first letter
                         if (updatedSubscriptions.hasOwnProperty(formattedCategory)) {
@@ -77,7 +85,7 @@ const Profile = () => {
         setActionLoading(true); // Start action loading
         const action = isSubscribed ? "add" : "remove";
         try {
-            await axios.post(process.env.REACT_APP_BASE_URL+'/subscribe', {
+            await axios.post(`${process.env.REACT_APP_BASE_URL}/subscribe`, {
                 email,
                 category,
                 action
@@ -103,7 +111,7 @@ const Profile = () => {
     const updateProfilePicture = async (firstname, lastname, newProfilePicture) => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post(process.env.REACT_APP_BASE_URL+'/editProfile', {
+            await axios.post(`${process.env.REACT_APP_BASE_URL}/editProfile`, {
                 email,
                 firstname,
                 lastname,
@@ -128,7 +136,7 @@ const Profile = () => {
     const handleEditProfile = async () => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post(process.env.REACT_APP_BASE_URL+'/editProfile', {
+            await axios.post(`${process.env.REACT_APP_BASE_URL}/editProfile`, {
                 email,
                 firstname: newFirstName,
                 lastname: newLastName,
@@ -151,7 +159,7 @@ const Profile = () => {
 
     if (actionLoading) return (
         <div className="flex justify-center items-center h-screen">
-            <ClipLoader size={50} color={"#980000"} loading={actionLoading}/>
+            <ClipLoader size={50} color={"#980000"} loading={actionLoading} />
         </div>
     );
 
@@ -162,7 +170,7 @@ const Profile = () => {
     );
 
     return (
-        <div className="w-full min-h-screen bg-cover bg-center" style={{backgroundImage: `url(${comicImage})`}}>
+        <div className="w-full min-h-screen bg-cover bg-center" style={{ backgroundImage: `url(${comicImage})` }}>
 
             <div className="max-w-3xl min-h-screen mx-auto py-4 px-2">
 
@@ -174,7 +182,7 @@ const Profile = () => {
                                 <img
                                     src={profile["profilepicture"]}
                                     alt={`${profile["firstname"]} ${profile["lastname"]}`}
-                                    className="w-32 h-32 rounded-full object-cover border-2 border-gray-300"
+                                    className="w-36 h-36 rounded-full object-cover border-2 border-gray-300"
                                 />
                                 <FaEdit
                                     onClick={() => setShowAvatarPicker(!showAvatarPicker)}
