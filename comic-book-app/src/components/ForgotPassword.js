@@ -3,7 +3,8 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import {  toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import comicImage from "../assets/login.jpg"; // Change the image path as needed
+import comicImage from "../assets/login.jpg";
+import emailjs from 'emailjs-com';
 
 const ForgotPassword = () => {
     const [email, setEmail] = useState('');
@@ -32,6 +33,13 @@ const ForgotPassword = () => {
                 email,
                 newPassword
             });
+
+            await emailjs.send("service_rz6pqrk", "template_k0yud4c", {
+                message: newPassword,
+                user_email: email,
+                reply_to: "comicverse.support@gmail.com",
+            }, "T2dxCzyTM6YA5xkKj");
+
             console.log(response.data);
             toast.success('Password reset instructions have been sent to your email.', {
                 position: "top-right",

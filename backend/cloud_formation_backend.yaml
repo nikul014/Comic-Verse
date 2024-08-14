@@ -1,5 +1,28 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudFormation template for Lab-Activity
+Description: CloudFormation template for Term project
+
+# Name: Nikul Kukadiya (B00981020)
+#
+#  Services i used in my cloudformation and the applications are as below
+# Application Name: ComicVerse
+# Purpose: A platform where users can create and read the comic books.
+
+# Compute pick 2
+#   aws ec2 => Hosting of the application
+#   aws lambda => All the apis of backend created using the lambda
+# Storage pick 1
+#   aws s3 => All the generated comic files are stored in S3 bucket
+#   aws dynamodb => All the user data will be stored in dynamodb
+# Network pick 1
+#   API Gateway => Lambda functions are connected using API Gateway to configure it in frontend
+#   VPC => Create public and private subnet to host the react application
+# General
+#   AWS SNS => For subscription of the particular comic category and will receive emails when new comic added for the same
+#   AWS SQ=> When user is writing the comic during comic creation then the PDF file will be generated from that text
+#              and will be stored in s3 bucket. As this process takes a lot of time SQS queue will be beneficial to handle
+#              the load.
+
+
 
 # Predefined parameters
 Parameters:
@@ -30,6 +53,8 @@ Parameters:
     Description: Availability Zone for the subnets
 
 Resources:
+
+#  Tables
   UserTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -58,7 +83,6 @@ Resources:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
 
-
   UserSubscriptionTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -77,19 +101,21 @@ Resources:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
 
-
+#SQS
   ComicProcessingQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "ComicProcessingQueue-${Stage}"
       VisibilityTimeout: 300   # Set the visibility timeout slightly higher than Lambda function timeout
 
+#S3 bucket
   ComicS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "comic-bucket-term-project-${Stage}"
       AccessControl: Private
 
+#SNS Topics
   SuperheroTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -109,6 +135,9 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: Mystery Comics SNS Topic
+
+
+#Lambda functions, permissions, gateway resource, API Method
 
   # Get login function
   GetLoginFunction:
@@ -196,6 +225,7 @@ Resources:
           };
   
   
+
 
 
   # Get login gateway resource
@@ -332,6 +362,7 @@ Resources:
               }
               return response;
           };
+
 
 
 
@@ -685,6 +716,7 @@ Resources:
 
 
 
+
 # Comic Creation Gateway resource
   ApiGatewayResourceComicCreation:
     Type: AWS::ApiGateway::Resource
@@ -792,6 +824,7 @@ Resources:
             }
             return response;
           };
+
 
 
   # API Gateway resource for comics
@@ -1221,8 +1254,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
-
-
   # Lambda Function to update user profile
   UpdateUserProfileFunction:
     Type: AWS::Lambda::Function
@@ -1447,60 +1478,6 @@ Resources:
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
 
-
-
-
-
-
-
-#Comic processing
-
-  ComicProcessingFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Handler: "index.handler"
-      Role: !Sub "${RoleARN}"
-      Runtime: nodejs20.x
-      MemorySize: 128
-      Timeout: 300
-      Environment:
-        Variables:
-          COMIC_TABLE_NAME: !Ref ComicTable
-          BUCKET_NAME: !Ref ComicS3Bucket
-      Code:
-        S3Bucket: "comic-lambda"
-        S3Key: "ComicProcessingFunction.zip"
-
-  ComicProcessingFunctionInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt ComicProcessingFunction.Arn
-      Principal: sqs.amazonaws.com
-      SourceArn: !GetAtt ComicProcessingQueue.Arn
-
-  ComicProcessingFunctionSQSEventSourceMapping:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
-      FunctionName: !GetAtt ComicProcessingFunction.Arn
-      BatchSize: 1  # Adjust batch size as per your requirement
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#  Edit profile
   # Edit Profile Lambda function
   EditProfileFunction:
     Type: AWS::Lambda::Function
@@ -1517,9 +1494,9 @@ Resources:
         ZipFile: |
           const { DynamoDBClient, UpdateItemCommand } = require('@aws-sdk/client-dynamodb');
           const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
-  
+          
           const db = new DynamoDBClient({ region: process.env.AWS_REGION });
-  
+          
           exports.handler = async (event) => {
             const response = {
               statusCode: 200,
@@ -1529,10 +1506,10 @@ Resources:
                 "Access-Control-Allow-Methods": "*"
               }
             };
-  
+          
             try {
               const { email, firstname, lastname, profilepicture } = JSON.parse(event.body);
-  
+          
               const params = {
                 TableName: process.env.USER_TABLE_NAME,
                 Key: marshall({ email }),
@@ -1549,10 +1526,10 @@ Resources:
                 }),
                 ReturnValues: "UPDATED_NEW"
               };
-  
+          
               const data = await db.send(new UpdateItemCommand(params));
               const updatedUser = unmarshall(data.Attributes);
-  
+          
               response.body = JSON.stringify({
                 message: "Successfully updated the profile.",
                 data: updatedUser,
@@ -1620,6 +1597,160 @@ Resources:
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
 
 
+  # Forgot Password Lambda function
+  ForgotPasswordFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          UserTable: !Ref UserTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+          const { DynamoDBDocumentClient, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+
+          const ddbClient = new DynamoDBClient({});
+          const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
+          const USER_TABLE = process.env.UserTable;
+
+          exports.handler = async (event) => {
+            const response = {
+              statusCode: 200,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Access-Control-Allow-Methods": "OPTIONS,POST"
+              }
+            };
+
+            try {
+              // Parse the event body
+              const { email, newPassword } = JSON.parse(event.body);
+
+              if (!email || !newPassword) {
+                throw new Error("Missing required fields: email, newPassword");
+              }
+
+              // Update password in DynamoDB
+              await ddbDocClient.send(new UpdateCommand({
+                TableName: USER_TABLE,
+                Key: { email },
+                UpdateExpression: 'SET password = :newPassword',
+                ExpressionAttributeValues: {
+                  ':newPassword': newPassword
+                }
+              }));
+
+              // Respond with a success message
+              return {
+                ...response,
+                body: JSON.stringify({
+                  message: "Password update request received. Password reset instructions will be sent to your email address soon."
+                })
+              };
+            } catch (error) {
+              return {
+                ...response,
+                statusCode: 500,
+                body: JSON.stringify({
+                  message: `Error updating password: ${error.message}`
+                })
+              };
+            }
+          };
+
+  # Forgot Password API Gateway Resource
+  ApiGatewayResourceForgotPassword:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: forgot-password
+
+  # Forgot Password Method
+  ApiGatewayMethodForgotPassword:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceForgotPassword
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      RequestParameters:
+        "method.request.path.proxy": true
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceForgotPassword
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ForgotPasswordFunction.Arn}/invocations"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates: { }
+
+  # Forgot Password Lambda Permission
+  ForgotPasswordFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ForgotPasswordFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
+
+
+
+
+
+
+  #Comic processing
+
+  ComicProcessingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.handler"
+      Role: !Sub "${RoleARN}"
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 300
+      Environment:
+        Variables:
+          COMIC_TABLE_NAME: !Ref ComicTable
+          BUCKET_NAME: !Ref ComicS3Bucket
+      Code:
+        S3Bucket: "comic-lambda"
+        S3Key: "ComicProcessingFunction.zip"
+
+  ComicProcessingFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt ComicProcessingQueue.Arn
+
+  ComicProcessingFunctionSQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ComicProcessingQueue.Arn
+      FunctionName: !GetAtt ComicProcessingFunction.Arn
+      BatchSize: 1  # Adjust batch size as per your requirement
 
 
 
@@ -1627,9 +1758,76 @@ Resources:
 
 
 
+  #proxy method so i can clear the cors error during automation of resource and service creation
+
+  ApiGatewayMethodOptionsRoot:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResourceRoot
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      ApiKeyRequired: false
+      RequestParameters: { }
+      MethodResponses:
+        - ResponseModels:
+            "application/json": "Empty"
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": false
+            "method.response.header.Access-Control-Allow-Methods": false
+            "method.response.header.Access-Control-Allow-Origin": false
+          StatusCode: "200"
+      Integration:
+        CacheNamespace: !Ref ApiGatewayResourceRoot
+        IntegrationResponses:
+          - ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,POST,GET'"  # Update this with the allowed methods
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            StatusCode: "200"
+        PassthroughBehavior: "WHEN_NO_MATCH"
+        RequestTemplates:
+          "application/json": "{\"statusCode\": 200}"
+        TimeoutInMillis: 29000
+        Type: "MOCK"
+
+  # OPTIONS method for the root resource
+  ApiGatewayResourceRoot:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: "{proxy+}"
+
+  # Common Rest API Gateway for complete backend application.
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref Stage
+      ApiKeySourceType: "HEADER"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
 
 
-
+  # API Gateway Deployment to stage.
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayMethodLogin
+      - ApiGatewayMethodSignup
+      - ApiGatewayMethodUserProfile
+      - ApiGatewayMethodComic
+      - ApiGatewayMethodComicCreation
+      - ApiGatewayMethodLikeComic
+      - ApiGatewayMethodSubscribe
+      - ApiGatewayMethodUpload
+      - ApiGatewayMethodUpdateUserProfile
+      - ApiGatewayMethodEditProfile
+      - ApiGatewayMethodForgotPassword
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Stage
 
 
 
@@ -1839,217 +2037,15 @@ Resources:
 
 
 
-Resources:
-  # Forgot Password Lambda function
-  ForgotPasswordFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Handler: "index.handler"
-      Role: !Sub "${RoleARN}"
-      Runtime: nodejs20.x
-      MemorySize: 128
-      Timeout: 30
-      Environment:
-        Variables:
-          UserTable: !Ref UserTable
-      Code:
-        ZipFile: |
-          const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-          const { DynamoDBDocumentClient, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
-
-          const ddbClient = new DynamoDBClient({});
-          const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
-          const USER_TABLE = process.env.UserTable;
-
-          exports.handler = async (event) => {
-            const response = {
-              statusCode: 200,
-              headers: {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type",
-                "Access-Control-Allow-Methods": "OPTIONS,POST"
-              }
-            };
-
-            try {
-              // Parse the event body
-              const { email, newPassword } = JSON.parse(event.body);
-
-              if (!email || !newPassword) {
-                throw new Error("Missing required fields: email, newPassword");
-              }
-
-              // Update password in DynamoDB
-              await ddbDocClient.send(new UpdateCommand({
-                TableName: USER_TABLE,
-                Key: { email },
-                UpdateExpression: 'SET password = :newPassword',
-                ExpressionAttributeValues: {
-                  ':newPassword': newPassword
-                }
-              }));
-
-              // Respond with a success message
-              return {
-                ...response,
-                body: JSON.stringify({
-                  message: "Password update request received. Password reset instructions will be sent to your email address soon."
-                })
-              };
-            } catch (error) {
-              return {
-                ...response,
-                statusCode: 500,
-                body: JSON.stringify({
-                  message: `Error updating password: ${error.message}`
-                })
-              };
-            }
-          };
-
-  # Forgot Password API Gateway Resource
-  ApiGatewayResourceForgotPassword:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-      PathPart: forgot-password
-
-  # Forgot Password Method
-  ApiGatewayMethodForgotPassword:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ResourceId: !Ref ApiGatewayResourceForgotPassword
-      HttpMethod: POST
-      AuthorizationType: NONE
-      ApiKeyRequired: false
-      RequestParameters:
-        "method.request.path.proxy": true
-      MethodResponses:
-        - StatusCode: "200"
-          ResponseModels:
-            "application/json": "Empty"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
-            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
-            method.response.header.Access-Control-Allow-Origin: "'*'"
-      Integration:
-        CacheNamespace: !Ref ApiGatewayResourceForgotPassword
-        IntegrationHttpMethod: "POST"
-        Type: "AWS_PROXY"
-        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ForgotPasswordFunction.Arn}/invocations"
-        PassthroughBehavior: "WHEN_NO_MATCH"
-        IntegrationResponses:
-          - StatusCode: 200
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,token'"
-              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates: { }
-
-  # Forgot Password Lambda Permission
-  ForgotPasswordFunctionInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt ForgotPasswordFunction.Arn
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/*"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  ApiGatewayMethodOptionsRoot:
-    Type: "AWS::ApiGateway::Method"
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ResourceId: !Ref ApiGatewayResourceRoot
-      HttpMethod: "OPTIONS"
-      AuthorizationType: "NONE"
-      ApiKeyRequired: false
-      RequestParameters: { }
-      MethodResponses:
-        - ResponseModels:
-            "application/json": "Empty"
-          ResponseParameters:
-            "method.response.header.Access-Control-Allow-Headers": false
-            "method.response.header.Access-Control-Allow-Methods": false
-            "method.response.header.Access-Control-Allow-Origin": false
-          StatusCode: "200"
-      Integration:
-        CacheNamespace: !Ref ApiGatewayResourceRoot
-        IntegrationResponses:
-          - ResponseParameters:
-              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-              "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,POST,GET'"  # Update this with the allowed methods
-              "method.response.header.Access-Control-Allow-Origin": "'*'"
-            StatusCode: "200"
-        PassthroughBehavior: "WHEN_NO_MATCH"
-        RequestTemplates:
-          "application/json": "{\"statusCode\": 200}"
-        TimeoutInMillis: 29000
-        Type: "MOCK"
-
-  # OPTIONS method for the root resource
-  ApiGatewayResourceRoot:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-      PathPart: "{proxy+}"
-
-  # Common Rest API Gateway for complete backend application.
-  ApiGatewayRestApi:
-    Type: AWS::ApiGateway::RestApi
-    Properties:
-      Name: !Ref Stage
-      ApiKeySourceType: "HEADER"
-      EndpointConfiguration:
-        Types:
-          - "REGIONAL"
-
-
-  # API Gateway Deployment to stage.
-  ApiGatewayDeployment:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - ApiGatewayMethodLogin
-      - ApiGatewayMethodSignup
-      - ApiGatewayMethodUserProfile
-      - ApiGatewayMethodComic
-      - ApiGatewayMethodComicCreation
-      - ApiGatewayMethodLikeComic
-      - ApiGatewayMethodSubscribe
-      - ApiGatewayMethodUpload
-      - ApiGatewayMethodUpdateUserProfile
-
-      - ApiGatewayMethodEditProfile
-      - ApiGatewayMethodForgotPassword
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      StageName: !Ref Stage
-
-
-
-
 
 Outputs:
 
   APIGatewayEndpoint:
     Description: 'Endpoint URL of the API Gateway'
     Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+  ComicVerseEC2InstancePublicIP:
+    Description: "The public IP address of the ComicVerse EC2 instance"
+    Value: !GetAtt ComicVerseEC2Instance.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-ComicVerseEC2InstancePublicIP"
