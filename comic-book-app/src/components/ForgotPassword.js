@@ -29,7 +29,7 @@ const ForgotPassword = () => {
         setLoading(true);
         try {
             const newPassword = generateRandomPassword(); // Generate the password
-            const response = await axios.post(process.env.REACT_APP_BASE_URL + '/forgotPassword', {
+            const response = await axios.post(process.env.REACT_APP_BASE_URL + '/forgot-password', {
                 email,
                 newPassword
             });
