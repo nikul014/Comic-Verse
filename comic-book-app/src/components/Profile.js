@@ -15,7 +15,7 @@ const Profile = () => {
     const [profile, setProfile] = useState(null);
     const [error, setError] = useState(null);
     const [subscriptions, setSubscriptions] = useState({
-        "Sci-fi": false,
+        "Sci-Fi": false,
         "Fantasy": false,
         "Superhero": false,
         "Mystery": false
@@ -53,16 +53,29 @@ const Profile = () => {
                     params: { email }
                 });
 
-                // Parse the comma-separated category data
-                const categories = response.data.data.category.split(',').filter(cat => cat); // Remove empty strings
+        const profileData = response.data.data;
 
-                setProfile(response.data.data);
+        // Ensure category exists and is a string before splitting
+        const categories = profileData.category
+            ? profileData.category.split(',').filter(cat => cat) // Remove empty strings
+            : [];
+
+        setProfile(profileData);
+
+                // Function to capitalize each word in a string
+                const capitalizeWords = (str) => {
+                    return str
+                        .toLowerCase()
+                        .split(/[\s-]+/) // Split by spaces or hyphens
+                        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                        .join('-');
+                };
 
                 // Update subscriptions state based on categories
                 setSubscriptions(prevState => {
                     const updatedSubscriptions = { ...prevState };
                     categories.forEach(category => {
-                        const formattedCategory = category.charAt(0).toUpperCase() + category.slice(1); // Capitalize first letter
+                        const formattedCategory = capitalizeWords(category); // Capitalize each word
                         if (updatedSubscriptions.hasOwnProperty(formattedCategory)) {
                             updatedSubscriptions[formattedCategory] = true;
                         }
@@ -72,6 +85,7 @@ const Profile = () => {
 
                 setActionLoading(false);
             } catch (err) {
+                console.error(err);
                 setError(err.message);
                 setActionLoading(false);
                 toast.error('Failed to load profile.');
@@ -111,7 +125,7 @@ const Profile = () => {
     const updateProfilePicture = async (firstname, lastname, newProfilePicture) => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post(`${process.env.REACT_APP_BASE_URL}/editProfile`, {
+            await axios.post(`${process.env.REACT_APP_BASE_URL}/edit-profile`, {
                 email,
                 firstname,
                 lastname,
@@ -136,7 +150,7 @@ const Profile = () => {
     const handleEditProfile = async () => {
         setActionLoading(true); // Start action loading
         try {
-            await axios.post(`${process.env.REACT_APP_BASE_URL}/editProfile`, {
+            await axios.post(`${process.env.REACT_APP_BASE_URL}/edit-profile`, {
                 email,
                 firstname: newFirstName,
                 lastname: newLastName,
