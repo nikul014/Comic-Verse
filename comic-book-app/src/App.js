@@ -112,12 +112,3 @@ const App = () => {
 };
 
 export default App;
-
-/*
-App redirection
-Forgot password - done
-User login data store - done
-Api route changes
-Report
-Cloudformation
- */
